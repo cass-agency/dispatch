@@ -27,7 +27,21 @@ interface VideoRecord {
 // In-memory store — last 5 videos
 const videoHistory: VideoRecord[] = [];
 
-// ── Routes ────────────────────────────────────────────────────
+// In-memory jobs map
+const jobs = new Map<
+  string,
+  {
+    status: "running" | "done" | "error";
+    result?: PipelineResult;
+    error?: string;
+    topic: string;
+    startedAt: string;
+  }
+>();
+
+// ────────────────────────────────────────────────────────────
+// Routes
+// ────────────────────────────────────────────────────────────
 
 app.get("/health", (_req: Request, res: Response) => {
   res.json({ status: "ok", version: "0.1.0" });
@@ -118,10 +132,10 @@ app.get("/", (_req: Request, res: Response) => {
 
   <div class="section-title" style="margin-top:40px;">Pipeline Agents</div>
   <div class="pipeline-steps">
-    <div class="step"><div class="icon">🔍</div><div class="label">Researcher</div><div class="cost">$0.09</div></div>
+    <div class="step"><div class="icon">📍</div><div class="label">Researcher</div><div class="cost">$0.09</div></div>
     <div class="step"><div class="icon">✍️</div><div class="label">Scriptwriter</div><div class="cost">$0.01</div></div>
     <div class="step"><div class="icon">🎨</div><div class="label">Visual</div><div class="cost">$0.08</div></div>
-    <div class="step"><div class="icon">🎬</div><div class="label">Animator</div><div class="cost">$0.30</div></div>
+    <div class="step"><div class="icon">🎬</div><div class="label">Editor</div><div class="cost">$0.00</div></div>
     <div class="step"><div class="icon">🎙️</div><div class="label">Voice</div><div class="cost">$0.02</div></div>
     <div class="step"><div class="icon">🎵</div><div class="label">Music</div><div class="cost">$0.10</div></div>
   </div>
@@ -142,9 +156,9 @@ async function generate() {
   const statusEl = document.getElementById('status');
   const topic = document.getElementById('topicInput').value || 'AI agent economy breakthroughs';
   btn.disabled = true;
-  btn.textContent = '⏳ Generating...';
+  btn.textContent = '⏳ Starting...';
   statusEl.style.display = 'block';
-  statusEl.textContent = '🚀 Starting pipeline...\\n';
+  statusEl.textContent = '🚀 Submitting job...\n';
   try {
     const res = await fetch('/generate', {
       method: 'POST',
@@ -153,16 +167,43 @@ async function generate() {
     });
     const data = await res.json();
     if (data.error) {
-      statusEl.textContent += '\\n❌ Error: ' + data.error;
-    } else {
-      statusEl.textContent += '\\n✅ Done! Headline: ' + data.headline;
-      statusEl.textContent += '\\n💰 Total cost: $' + data.cost.toFixed(4) + ' USDC';
-      if (data.videoUrl) statusEl.textContent += '\\n📹 Video: ' + data.videoUrl;
-      setTimeout(() => location.reload(), 2000);
+      statusEl.textContent += '\n❌ Error: ' + data.error;
+      btn.disabled = false;
+      btn.textContent = '🚀 Generate';
+      return;
     }
+    const jobId = data.jobId;
+    statusEl.textContent += '✅ Job started: ' + jobId + '\n⏳ Processing';
+    btn.textContent = '⏳ Generating...';
+    // Poll every 3 seconds
+    const poll = async () => {
+      try {
+        const pollRes = await fetch('/api/jobs/' + jobId);
+        const job = await pollRes.json();
+        if (job.status === 'running') {
+          statusEl.textContent += '.';
+          setTimeout(poll, 3000);
+        } else if (job.status === 'done') {
+          statusEl.textContent += '\n\n✅ Done! Headline: ' + job.headline;
+          statusEl.textContent += '\n💰 Total cost: $' + job.cost.toFixed(4) + ' USDC';
+          if (job.videoUrl) statusEl.textContent += '\n📹 Video: ' + job.videoUrl;
+          btn.disabled = false;
+          btn.textContent = '🚀 Generate';
+          setTimeout(() => location.reload(), 2000);
+        } else {
+          statusEl.textContent += '\n\n❌ Error: ' + job.error;
+          btn.disabled = false;
+          btn.textContent = '🚀 Generate';
+        }
+      } catch(e) {
+        statusEl.textContent += '\n❌ Poll error: ' + e.message;
+        btn.disabled = false;
+        btn.textContent = '🚀 Generate';
+      }
+    };
+    setTimeout(poll, 3000);
   } catch(e) {
-    statusEl.textContent += '\\n❌ Network error: ' + e.message;
-  } finally {
+    statusEl.textContent += '\n❌ Network error: ' + e.message;
     btn.disabled = false;
     btn.textContent = '🚀 Generate';
   }
@@ -176,39 +217,69 @@ async function generate() {
 
 app.post("/generate", async (req: Request, res: Response) => {
   const topic: string = req.body?.topic || "AI agent economy breakthroughs";
+  const jobId = Date.now().toString(36);
+  const startedAt = new Date().toISOString();
 
-  console.log(`\n🔍 [Server] POST /generate — topic: "${topic}"`);
+  console.log(`\n📍 [Server] POST /generate — topic: "${topic}" — jobId: ${jobId}`);
 
-  try {
-    const result = await runPipeline(topic);
+  jobs.set(jobId, { status: "running", topic, startedAt });
 
-    // Extract filename from path
-    const filename = path.basename(result.videoPath);
+  runPipeline(topic)
+    .then((result) => {
+      jobs.set(jobId, { status: "done", result, topic, startedAt });
+    })
+    .catch((err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`❌ [Server] Pipeline error for job ${jobId}:`, message);
+      jobs.set(jobId, { status: "error", error: message, topic, startedAt });
+    });
 
-    // Keep last 5 videos
+  res.json({ jobId, status: "running" });
+});
+
+app.get("/api/jobs/:jobId", (req: Request, res: Response) => {
+  const job = jobs.get(req.params.jobId);
+  if (!job) {
+    res.status(404).json({ error: "Job not found" });
+    return;
+  }
+
+  if (job.status === "running") {
+    res.json({ status: "running", topic: job.topic, startedAt: job.startedAt });
+    return;
+  }
+
+  if (job.status === "error") {
+    res.json({ status: "error", error: job.error, topic: job.topic, startedAt: job.startedAt });
+    return;
+  }
+
+  // done — push to history and return full result
+  const result = job.result!;
+  const filename = path.basename(result.videoPath);
+  const alreadyRecorded = videoHistory.some((v) => v.filename === filename);
+  if (!alreadyRecorded) {
     videoHistory.push({
       filename,
       headline: result.headline,
       cost: result.totalCost,
       payments: result.payments,
       createdAt: new Date().toISOString(),
-      topic,
+      topic: job.topic,
     });
     if (videoHistory.length > 5) videoHistory.shift();
-
-    const videoUrl = `/video/${encodeURIComponent(filename)}`;
-
-    res.json({
-      videoUrl,
-      cost: result.totalCost,
-      payments: result.payments,
-      headline: result.headline,
-    });
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.error("❌ [Server] Pipeline error:", message);
-    res.status(500).json({ error: message });
   }
+
+  const videoUrl = `/video/${encodeURIComponent(filename)}`;
+  res.json({
+    status: "done",
+    videoUrl,
+    cost: result.totalCost,
+    payments: result.payments,
+    headline: result.headline,
+    topic: job.topic,
+    startedAt: job.startedAt,
+  });
 });
 
 app.get("/video/:filename", (req: Request, res: Response) => {
@@ -226,7 +297,9 @@ app.get("/video/:filename", (req: Request, res: Response) => {
   res.sendFile(filePath);
 });
 
-// ── Start ─────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────
+// Start
+// ────────────────────────────────────────────────────────────
 
 app.listen(PORT, () => {
   console.log(`\n📡 Dispatch server running on http://localhost:${PORT}`);
