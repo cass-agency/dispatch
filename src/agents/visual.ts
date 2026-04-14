@@ -1,7 +1,9 @@
+import axios from "axios";
 import { callWrapped, logCost } from "../locus";
 import { Segment } from "./scriptwriter";
 
 const DEMO_MODE = process.env.DEMO_MODE === "true";
+const IMAGE_MODEL = "fal-ai/flux/dev";
 
 export interface VisualImage { url: string; segmentIndex: number; }
 export interface VisualResult { images: VisualImage[]; }
@@ -15,46 +17,57 @@ const DEMO_IMAGES: VisualResult = {
   ],
 };
 
-const IMAGE_MODEL = "fal-ai/flux/dev";
+interface FalQueueResponse {
+  request_id: string;
+  status_url: string;
+  response_url: string;
+  status?: string;
+  images?: Array<{ url: string }>;
+}
 
-async function pollFalStatus(model: string, requestId: string): Promise<unknown> {
-  const maxAttempts = 30;
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const statusRes = (await callWrapped("fal", "status", { model, request_id: requestId })) as { status?: string };
-    if (statusRes.status === "COMPLETED") {
-      return await callWrapped("fal", "result", { model, request_id: requestId });
-    } else if (statusRes.status === "FAILED") {
-      throw new Error(`fal.ai request ${requestId} failed`);
+async function pollFalQueue(statusUrl: string, responseUrl: string): Promise<{ images: Array<{ url: string }> }> {
+  for (let i = 0; i < 30; i++) {
+    const { data: status } = await axios.get<{ status: string }>(statusUrl);
+    if (status.status === "COMPLETED") {
+      const { data: result } = await axios.get<{ images: Array<{ url: string }> }>(responseUrl);
+      return result;
+    } else if (status.status === "FAILED") {
+      throw new Error("fal.ai image generation failed");
     }
     await new Promise((r) => setTimeout(r, 3000));
   }
-  throw new Error(`fal.ai request ${requestId} timed out`);
+  throw new Error("fal.ai image generation timed out");
 }
 
 async function generateImage(prompt: string, segmentIndex: number): Promise<VisualImage> {
-  console.log(`🎨 [Visual] Generating image for segment ${segmentIndex}...`);
+  console.log(`🎨 [Visual] Generating image ${segmentIndex + 1}/4...`);
+
   const genRes = (await callWrapped("fal", "generate", {
     model: IMAGE_MODEL, prompt, num_images: 1,
-  })) as { request_id?: string; images?: Array<{ url?: string }> };
+  })) as FalQueueResponse;
 
-  // fal.ai may return synchronously (images in response) or async (request_id)
+  // Synchronous response (images already returned)
   if (genRes.images?.[0]?.url) {
-    return { url: genRes.images[0].url!, segmentIndex };
+    return { url: genRes.images[0].url, segmentIndex };
   }
-  if (!genRes.request_id) throw new Error("fal.ai generate: no request_id or images");
 
-  const result = (await pollFalStatus(IMAGE_MODEL, genRes.request_id)) as { images?: Array<{ url?: string }> };
+  if (!genRes.status_url || !genRes.response_url) {
+    throw new Error("fal.ai generate: missing queue URLs");
+  }
+
+  const result = await pollFalQueue(genRes.status_url, genRes.response_url);
   const url = result.images?.[0]?.url;
   if (!url) throw new Error(`No image URL for segment ${segmentIndex}`);
+  console.log(`🎨 [Visual] Image ${segmentIndex + 1} ready: ${url.slice(0, 60)}...`);
   return { url, segmentIndex };
 }
 
 export async function runVisual(segments: Segment[]): Promise<VisualResult> {
-  console.log(`🎨 [Visual] Generating ${segments.length} images...`);
   if (DEMO_MODE) {
-    logCost("visual", 0.08, "fal.ai flux/dev image generation (demo)");
+    logCost("visual", 0.08, "fal.ai flux/dev — demo");
     return DEMO_IMAGES;
   }
+  console.log(`🎨 [Visual] Generating ${segments.length} images...`);
   const images: VisualImage[] = [];
   for (let i = 0; i < segments.length; i++) {
     images.push(await generateImage(segments[i].imagePrompt, i));
