@@ -12,7 +12,7 @@ import { MusicResult } from "./agents/music";
 // Assembles final video using FFmpeg Ken Burns effect
 // Steps:
 //   1. Download each image to /tmp
-//   2. For each image, scale to 110% and animated-crop (Ken Burns pan) → 5s clip
+//   2. For each image, scale to 110% and animated-crop (Ken Burns pan) → clip duration from voice
 //   3. Write narration audio to /tmp
 //   4. Download music track to /tmp
 //   5. Concatenate video clips
@@ -59,6 +59,16 @@ export async function runEditor(
     return outputPath;
   }
 
+  // Calculate clip duration dynamically from voice audio duration so the
+  // video length matches the narration rather than being hardcoded at 5s/clip.
+  const durationSeconds = voice.durationSeconds ?? 5 * images.length;
+  const clipFrames = Math.round((durationSeconds / images.length) * 25);
+  const lastFrame = clipFrames - 1; // used in pan expressions (0-indexed)
+
+  console.log(
+    `🎞️ [Editor] Voice duration: ${durationSeconds.toFixed(2)}s → ${clipFrames} frames/clip (${images.length} clips)`
+  );
+
   // 1. Download images and create Ken Burns clips
   const clipPaths: string[] = [];
   for (let i = 0; i < images.length; i++) {
@@ -74,10 +84,10 @@ export async function runEditor(
     const ex = 192; // 2112 - 1920
     const ey = 108; // 1188 - 1080
     const panDirections = [
-      `x='${ex}*n/124':y='${ey}*n/124'`,              // TL → BR
-      `x='${ex}*(1-n/124)':y='${ey}*(1-n/124)'`,      // BR → TL
-      `x='${ex}*n/124':y='${ey}*(1-n/124)'`,           // BL → TR
-      `x='${ex}*(1-n/124)':y='${ey}*n/124'`,           // TR → BL
+      `x='${ex}*n/${lastFrame}':y='${ey}*n/${lastFrame}'`,              // TL → BR
+      `x='${ex}*(1-n/${lastFrame})':y='${ey}*(1-n/${lastFrame})'`,      // BR → TL
+      `x='${ex}*n/${lastFrame}':y='${ey}*(1-n/${lastFrame})'`,           // BL → TR
+      `x='${ex}*(1-n/${lastFrame})':y='${ey}*n/${lastFrame}'`,           // TR → BL
     ];
     const pan = panDirections[i % 4];
     const vf = `scale=2112:1188:force_original_aspect_ratio=increase,crop=2112:1188,crop=1920:1080:${pan}`;
@@ -86,7 +96,7 @@ export async function runEditor(
       "-loop", "1",
       "-i", `"${imgPath}"`,
       "-vf", `"${vf}"`,
-      "-frames:v", "125",
+      "-frames:v", `${clipFrames}`,
       "-c:v", "libx264",
       "-preset", "ultrafast",
       "-pix_fmt", "yuv420p",
@@ -140,4 +150,3 @@ export async function runEditor(
   console.log(`🎞️ [Editor] Final video: ${outputPath}`);
   return outputPath;
 }
-
