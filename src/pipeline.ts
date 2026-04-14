@@ -8,16 +8,16 @@ import { pay, logCost } from "./locus";
 
 // ============================================================
 // Pipeline — main orchestration
-// Runs all agents in sequence; each agent "earns" USDC on completion
+// Runs all agents in sequence; each agent earns USDC on completion
 // ============================================================
 
-// Agent wallet addresses (mock addresses for demo)
+// Real agent wallet addresses
 const AGENT_ADDRESSES: Record<string, string> = {
-  researcher:   "0x1111111111111111111111111111111111111111",
-  scriptwriter: "0x2222222222222222222222222222222222222222",
-  visual:       "0x3333333333333333333333333333333333333333",
-  voice:        "0x5555555555555555555555555555555555555555",
-  music:        "0x6666666666666666666666666666666666666666",
+  researcher:   "0xA865aEA68e7f6B611a69c34669e349C0aAe1FDF5",
+  scriptwriter: "0xA86e854Ef4cac10676E1c6f0f90e091b4b3f1598",
+  visual:       "0x742d35Cc6634C0532925a3b844Bc454e4438f44e",
+  voice:        "0x4838B106FCe9647Bdf1E7877BF73cE8B0BAD5f97",
+  music:        "0x95222290DD7278Aa3Ddd389Cc1E1d165CC4BAfe5",
 };
 
 // Real API cost estimates (in USDC)
@@ -41,6 +41,11 @@ export interface PipelineResult {
   totalCost: number;
   payments: Payment[];
   headline: string;
+  requesterAddress?: string;
+}
+
+export interface PipelineOptions {
+  requesterAddress?: string;
 }
 
 async function payAgent(
@@ -51,15 +56,14 @@ async function payAgent(
   const amount = AGENT_COSTS[agentName];
 
   logCost(agentName, amount, memo);
-
-  // Uncomment to enable live A2A payments:
-  // await pay(address, amount, memo);
+  await pay(address, amount, memo);
 
   return { agent: agentName, address, amount, memo };
 }
 
 export async function runPipeline(
-  topic = "AI agent economy breakthroughs"
+  topic = "AI agent economy breakthroughs",
+  options?: PipelineOptions
 ): Promise<PipelineResult> {
   console.log("\n🚀 [Pipeline] Starting Dispatch news video pipeline...");
   console.log(`📰 [Pipeline] Topic: ${topic}\n`);
@@ -109,5 +113,6 @@ export async function runPipeline(
     totalCost,
     payments,
     headline: script.headline,
+    requesterAddress: options?.requesterAddress,
   };
 }
