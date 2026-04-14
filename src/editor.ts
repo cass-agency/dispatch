@@ -72,9 +72,8 @@ export async function runEditor(
       "ffmpeg", "-y",
       "-loop", "1",
       "-i", `"${imgPath}"`,
-      "-vf", '"scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,zoompan=z=\'min(zoom+0.0015,1.5)\':d=125:x=\'iw/2-(iw/zoom/2)\':y=\'ih/2-(ih/zoom/2)\':s=hd1080"',
-      "-t", "5",
-      "-r", "25",
+      "-vf", '"scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,zoompan=z=\'min(zoom+0.0015,1.5)\':d=125:x=\'iw/2-(iw/zoom/2)\':y=\'ih/2-(ih/zoom/2)\':s=1920x1080"',
+      "-frames:v", "125",
       "-c:v", "libx264",
       "-pix_fmt", "yuv420p",
       `"${clipPath}"`
@@ -127,3 +126,4 @@ export async function runEditor(
   console.log(`🎞️ [Editor] Final video: ${outputPath}`);
   return outputPath;
 }
+
