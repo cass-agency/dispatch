@@ -330,7 +330,7 @@ app.post("/request", async (req: Request, res: Response) => {
 
   jobs.set(jobId, { status: "running", topic, startedAt });
 
-  runPipeline(topic, { requesterAddress })
+  runPipeline(topic, { requesterAddress, requestFee: REQUEST_FEE })
     .then((result) => {
       jobs.set(jobId, { status: "done", result, topic, startedAt });
     })
@@ -363,39 +363,69 @@ app.get("/videos", (_req: Request, res: Response) => {
 
 // ── POST /videos/:id/watch — pay to watch, revenue share ─────
 app.post("/videos/:id/watch", async (req: Request, res: Response) => {
-  const videoId = req.params.id;
-  const { locusApiKey } = req.body ?? {};
-  if (!locusApiKey) { res.status(400).json({ error: "locusApiKey is required" }); return; }
+  const video = videoById.get(req.params.id);
+  if (!video) { res.status(404).json({ error: "Video not found" }); return; }
 
-  const record = videoById.get(videoId);
-  if (!record) { res.status(404).json({ error: "Video not found" }); return; }
-
-  // Charge viewer VIEW_PRICE → Dispatch wallet using their API key
-  try {
-    await pay(DISPATCH_WALLET, VIEW_PRICE, `Dispatch view: ${videoId}`, locusApiKey);
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    res.status(402).json({ error: `View payment failed: ${msg}` });
+  const viewerApiKey: string = req.body?.locusApiKey;
+  if (!viewerApiKey) {
+    res.status(402).json({
+      error: "Payment required",
+      price: video.viewPrice,
+      currency: "USDC",
+      dispatchWallet: DISPATCH_WALLET,
+      instruction: "Include your Locus API key as locusApiKey to pay and watch"
+    });
     return;
   }
 
-  // Send 40% revenue share to requester using the main Dispatch API key
-  if (record.requesterAddress) {
-    const share = parseFloat((VIEW_PRICE * REQUESTER_SHARE).toFixed(6));
+  // Charge viewer using THEIR API key to send from their wallet to Dispatch
+  try {
+    const viewerClient = axios.create({
+      baseURL: "https://beta-api.paywithlocus.com",
+      headers: { Authorization: `Bearer ${viewerApiKey}`, "Content-Type": "application/json" },
+      timeout: 30_000,
+    });
+    await viewerClient.post("/api/pay/send", {
+      to_address: DISPATCH_WALLET,
+      amount: video.viewPrice,
+      memo: `Dispatch view: ${video.headline}`
+    });
+  } catch (err: unknown) {
+    const detail = axios.isAxiosError(err) ? JSON.stringify(err.response?.data) : String(err);
+    res.status(402).json({ error: "Payment failed", detail });
+    return;
+  }
+
+  // Payment succeeded — distribute requester share
+  video.viewCount++;
+  video.totalRevenue = (video.totalRevenue || 0) + video.viewPrice;
+
+  if (video.requesterAddress) {
+    const requesterShare = Math.round(video.viewPrice * REQUESTER_SHARE * 1000) / 1000;
+    const mainKey = process.env.LOCUS_API_KEY!;
     try {
-      await pay(record.requesterAddress, share, `Dispatch view revenue share: ${videoId}`);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      // Log but don't fail the request — viewer already paid
-      console.error(`[Server] Revenue share payment failed for ${videoId}: ${msg}`);
+      const mainClient = axios.create({
+        baseURL: "https://beta-api.paywithlocus.com",
+        headers: { Authorization: `Bearer ${mainKey}`, "Content-Type": "application/json" },
+        timeout: 30_000,
+      });
+      await mainClient.post("/api/pay/send", {
+        to_address: video.requesterAddress,
+        amount: requesterShare,
+        memo: `Dispatch revenue share: ${video.headline}`
+      });
+      console.log(`💸 [Server] Sent $${requesterShare} revenue share to requester ${video.requesterAddress}`);
+    } catch (err) {
+      console.error("Revenue share payment failed:", err);
+      // Don't fail the watch — video was paid for
     }
   }
 
-  record.viewCount += 1;
-  record.totalRevenue += VIEW_PRICE;
-
-  const videoUrl = `/video/${encodeURIComponent(record.filename)}`;
-  res.json({ videoUrl, viewCount: record.viewCount });
+  res.json({
+    videoUrl: `/video/${encodeURIComponent(video.filename)}`,
+    viewCount: video.viewCount,
+    requesterSharePaid: video.requesterAddress ? video.viewPrice * REQUESTER_SHARE : 0
+  });
 });
 
 app.post("/generate", async (req: Request, res: Response) => {
@@ -487,6 +517,8 @@ app.get("/video/:filename", (req: Request, res: Response) => {
     res.status(404).json({ error: "Video not found" });
     return;
   }
+  res.setHeader("Content-Type", "video/mp4");
+  res.setHeader("Accept-Ranges", "bytes");
   res.sendFile(filePath);
 });
 
