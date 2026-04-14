@@ -4,7 +4,14 @@ const LOCUS_BASE = "https://beta-api.paywithlocus.com";
 
 let _client: AxiosInstance | null = null;
 
-function getClient(): AxiosInstance {
+function getClient(apiKey?: string): AxiosInstance {
+  if (apiKey) {
+    return axios.create({
+      baseURL: LOCUS_BASE,
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      timeout: 120_000,
+    });
+  }
   if (!_client) {
     const key = process.env.LOCUS_API_KEY;
     if (!key) throw new Error("LOCUS_API_KEY environment variable is not set");
@@ -41,9 +48,10 @@ export async function callWrapped(
 export async function pay(
   toAddress: string,
   amount: number,
-  memo: string
+  memo: string,
+  apiKey?: string
 ): Promise<unknown> {
-  const client = getClient();
+  const client = getClient(apiKey);
   try {
     const response = await client.post("/api/pay/send", { to_address: toAddress, amount, memo });
     return response.data;
@@ -60,4 +68,3 @@ export async function pay(
 export function logCost(agentName: string, cost: number, description: string): void {
   console.log(`[COST] 💰 ${agentName.padEnd(12)} $${(cost).toFixed(4)} USDC  — ${description}`);
 }
-
