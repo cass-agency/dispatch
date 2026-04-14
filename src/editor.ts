@@ -90,13 +90,17 @@ export async function runEditor(
       `x='${ex}*(1-n/${lastFrame})':y='${ey}*n/${lastFrame}'`,           // TR → BL
     ];
     const pan = panDirections[i % 4];
-    const vf = `scale=2112:1188:force_original_aspect_ratio=increase,crop=2112:1188,crop=1920:1080:${pan}`;
+    // Fix: append format=yuv420p to avoid yuvj420p (full-range JPEG color space) black screen in browsers
+    const vf = `scale=2112:1188:force_original_aspect_ratio=increase,crop=2112:1188,crop=1920:1080:${pan},format=yuv420p`;
     const ffmpegCmd = [
       "ffmpeg", "-y",
       "-loop", "1",
       "-i", `"${imgPath}"`,
       "-vf", `"${vf}"`,
       "-frames:v", `${clipFrames}`,
+      "-colorspace", "1",
+      "-color_primaries", "1",
+      "-color_trc", "1",
       "-c:v", "libx264",
       "-preset", "ultrafast",
       "-pix_fmt", "yuv420p",
