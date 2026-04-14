@@ -9,15 +9,16 @@ import { MusicResult } from "./agents/music";
 
 // ============================================================
 // Editor
-// Assembles final video using FFmpeg Ken Burns zoom effect
+// Assembles final video using FFmpeg Ken Burns effect
 // Steps:
 //   1. Download each image to /tmp
-//   2. For each image, run FFmpeg Ken Burns zoompan to create 5-second clip
+//   2. For each image, scale to 110% and animated-crop (Ken Burns pan) → 5s clip
 //   3. Write narration audio to /tmp
 //   4. Download music track to /tmp
 //   5. Concatenate video clips
 //   6. Mix narration + music (music at 0.3 volume)
 //   7. Return output path
+// NOTE: scale+crop approach instead of zoompan — avoids d-frame buffer OOM at 512MB RAM
 // ============================================================
 
 const DEMO_MODE = process.env.DEMO_MODE === "true";
@@ -67,14 +68,27 @@ export async function runEditor(
     await downloadFile(images[i].url, imgPath);
 
     console.log(`🎞️ [Editor] Creating Ken Burns clip ${i}...`);
-    // Ken Burns zoompan: slowly zoom in from 1.0 to 1.5 over 125 frames (5s @ 25fps)
+    // Ken Burns effect via scale-up + animated crop (no zoompan — avoids d-frame buffer OOM).
+    // Scale image to 110% (2112x1188), then crop 1920x1080 window that slowly pans across.
+    // Alternating pan directions give visual variety across clips.
+    const ex = 192; // 2112 - 1920
+    const ey = 108; // 1188 - 1080
+    const panDirections = [
+      `x='${ex}*n/124':y='${ey}*n/124'`,              // TL → BR
+      `x='${ex}*(1-n/124)':y='${ey}*(1-n/124)'`,      // BR → TL
+      `x='${ex}*n/124':y='${ey}*(1-n/124)'`,           // BL → TR
+      `x='${ex}*(1-n/124)':y='${ey}*n/124'`,           // TR → BL
+    ];
+    const pan = panDirections[i % 4];
+    const vf = `scale=2112:1188:force_original_aspect_ratio=increase,crop=2112:1188,crop=1920:1080:${pan}`;
     const ffmpegCmd = [
       "ffmpeg", "-y",
       "-loop", "1",
       "-i", `"${imgPath}"`,
-      "-vf", '"scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,zoompan=z=\'min(zoom+0.0015,1.5)\':d=125:x=\'iw/2-(iw/zoom/2)\':y=\'ih/2-(ih/zoom/2)\':s=1920x1080"',
+      "-vf", `"${vf}"`,
       "-frames:v", "125",
       "-c:v", "libx264",
+      "-preset", "ultrafast",
       "-pix_fmt", "yuv420p",
       `"${clipPath}"`
     ].join(" ");
