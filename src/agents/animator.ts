@@ -1,8 +1,10 @@
+import axios from "axios";
 import { callWrapped, logCost } from "../locus";
 import { Segment } from "./scriptwriter";
 import { VisualImage } from "./visual";
 
 const DEMO_MODE = process.env.DEMO_MODE === "true";
+const VIDEO_MODEL = "fal-ai/kling-video/v1.6/standard/image-to-video";
 
 export interface VideoClip { url: string; duration: number; segmentIndex: number; }
 export interface AnimatorResult { clips: VideoClip[]; }
@@ -16,43 +18,49 @@ const DEMO_CLIPS: AnimatorResult = {
   ],
 };
 
-const VIDEO_MODEL = "fal-ai/kling-video/v1.6/standard/image-to-video";
+interface FalQueueResponse {
+  request_id: string;
+  status_url: string;
+  response_url: string;
+  status?: string;
+  video?: { url: string };
+}
 
-async function pollFalStatus(model: string, requestId: string): Promise<unknown> {
-  const maxAttempts = 40;
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const statusRes = (await callWrapped("fal", "status", { model, request_id: requestId })) as { status?: string };
-    if (statusRes.status === "COMPLETED") {
-      return await callWrapped("fal", "result", { model, request_id: requestId });
-    } else if (statusRes.status === "FAILED") {
-      throw new Error(`fal.ai video request ${requestId} failed`);
+async function pollFalQueue(statusUrl: string, responseUrl: string): Promise<{ video: { url: string } }> {
+  for (let i = 0; i < 60; i++) {
+    const { data: status } = await axios.get<{ status: string }>(statusUrl);
+    if (status.status === "COMPLETED") {
+      const { data: result } = await axios.get<{ video: { url: string } }>(responseUrl);
+      return result;
+    } else if (status.status === "FAILED") {
+      throw new Error("fal.ai video generation failed");
     }
     await new Promise((r) => setTimeout(r, 5000));
   }
-  throw new Error(`fal.ai video request ${requestId} timed out`);
+  throw new Error("fal.ai video generation timed out");
 }
 
 async function generateClip(imageUrl: string, narration: string, segmentIndex: number): Promise<VideoClip> {
-  console.log(`🎬 [Animator] Generating clip for segment ${segmentIndex}...`);
+  console.log(`🎬 [Animator] Generating clip ${segmentIndex + 1}/4...`);
+
   const genRes = (await callWrapped("fal", "generate", {
     model: VIDEO_MODEL, image_url: imageUrl, prompt: narration.slice(0, 300),
-  })) as { request_id?: string; video?: { url?: string } };
+  })) as FalQueueResponse;
 
   if (genRes.video?.url) return { url: genRes.video.url, duration: 5, segmentIndex };
-  if (!genRes.request_id) throw new Error("fal.ai video generate: no request_id");
+  if (!genRes.status_url || !genRes.response_url) throw new Error("fal.ai video: missing queue URLs");
 
-  const result = (await pollFalStatus(VIDEO_MODEL, genRes.request_id)) as { video?: { url?: string } };
-  const url = result.video?.url;
-  if (!url) throw new Error(`No video URL for segment ${segmentIndex}`);
-  return { url, duration: 5, segmentIndex };
+  const result = await pollFalQueue(genRes.status_url, genRes.response_url);
+  console.log(`🎬 [Animator] Clip ${segmentIndex + 1} ready`);
+  return { url: result.video.url, duration: 5, segmentIndex };
 }
 
 export async function runAnimator(segments: Segment[], images: VisualImage[]): Promise<AnimatorResult> {
-  console.log(`🎬 [Animator] Animating ${segments.length} clips...`);
   if (DEMO_MODE) {
-    logCost("animator", 0.3, "fal.ai Kling video generation (demo)");
+    logCost("animator", 0.3, "fal.ai Kling — demo");
     return DEMO_CLIPS;
   }
+  console.log(`🎬 [Animator] Animating ${segments.length} clips...`);
   const clips: VideoClip[] = [];
   for (let i = 0; i < segments.length; i++) {
     const image = images.find((img) => img.segmentIndex === i);
