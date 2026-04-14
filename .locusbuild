@@ -1,0 +1,13 @@
+{
+  "services": {
+    "dispatch": {
+      "path": ".",
+      "port": 8080,
+      "healthCheck": "/health",
+      "env": {
+        "LOCUS_API_KEY": "",
+        "NODE_ENV": "production"
+      }
+    }
+  }
+}
