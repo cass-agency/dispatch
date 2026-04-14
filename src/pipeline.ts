@@ -8,25 +8,32 @@ import { pay, logCost } from "./locus";
 
 // ============================================================
 // Pipeline — main orchestration
-// Runs all agents in sequence; each agent earns USDC on completion
+// Researcher is the orchestrator: receives the budget and pays each
+// specialist agent at MARKUP prices (not just cost). The markup is the
+// agent's profit margin on top of the actual API cost that Locus handles.
 // ============================================================
 
-// Real agent wallet addresses
+// Real agent wallet addresses (wallets with private keys)
 const AGENT_ADDRESSES: Record<string, string> = {
-  researcher:   "0xA865aEA68e7f6B611a69c34669e349C0aAe1FDF5",
+  researcher:   "0xA865aEA68e7f6B611a69c34669e349C0aAe1FDF5",   // orchestrator — earns the spread
   scriptwriter: "0xA86e854Ef4cac10676E1c6f0f90e091b4b3f1598",
-  visual:       "0x742d35Cc6634C0532925a3b844Bc454e4438f44e",
-  voice:        "0x4838B106FCe9647Bdf1E7877BF73cE8B0BAD5f97",
-  music:        "0x95222290DD7278Aa3Ddd389Cc1E1d165CC4BAfe5",
+  visual:       "0xF46F05E04e6e34621DF881B486AbE45eA3010617",
+  voice:        "0x51fF2E55eF9687aCcC97b8dDa2983859104e56c8",
+  music:        "0x60Be80b931836e60651B3Cb7800D5cAA7CE10a50",
 };
 
-// Real API cost estimates (in USDC)
+// Markup prices — what orchestrator pays each agent (higher than actual API cost; agent pockets the margin)
 const AGENT_COSTS: Record<string, number> = {
-  researcher:   0.09,
-  scriptwriter: 0.01,
-  visual:       0.08,
-  voice:        0.02,
-  music:        0.10,
+  researcher:   0.00,   // orchestrator doesn't pay itself — it earns the spread
+  scriptwriter: 0.02,   // actual Locus cost ~$0.01, earns $0.01 margin
+  visual:       0.12,   // actual Locus cost ~$0.08, earns $0.04 margin
+  voice:        0.04,   // actual Locus cost ~$0.02, earns $0.02 margin
+  music:        0.15,   // actual Locus cost ~$0.10, earns $0.05 margin
+};
+
+// Agent margins for display (markup price minus actual cost)
+const AGENT_MARGINS: Record<string, number> = {
+  researcher: 0, scriptwriter: 0.01, visual: 0.04, voice: 0.02, music: 0.05,
 };
 
 export interface Payment {
@@ -34,6 +41,7 @@ export interface Payment {
   address: string;
   amount: number;
   memo: string;
+  margin: number;
 }
 
 export interface PipelineResult {
@@ -42,10 +50,12 @@ export interface PipelineResult {
   payments: Payment[];
   headline: string;
   requesterAddress?: string;
+  orchestratorEarnings: number;
 }
 
 export interface PipelineOptions {
   requesterAddress?: string;
+  requestFee?: number;
 }
 
 async function payAgent(
@@ -54,11 +64,19 @@ async function payAgent(
 ): Promise<Payment> {
   const address = AGENT_ADDRESSES[agentName];
   const amount = AGENT_COSTS[agentName];
+  const margin = AGENT_MARGINS[agentName];
 
   logCost(agentName, amount, memo);
-  await pay(address, amount, memo);
 
-  return { agent: agentName, address, amount, memo };
+  if (agentName === "researcher") {
+    console.log(`🤖 [researcher]  orchestrator  earns spread`);
+  } else {
+    const actualCost = amount - margin;
+    console.log(`🤖 [${agentName}] paid $${amount.toFixed(2)} (cost $${actualCost.toFixed(2)}, margin $${margin.toFixed(2)})`);
+    await pay(address, amount, memo);
+  }
+
+  return { agent: agentName, address, amount, memo, margin };
 }
 
 export async function runPipeline(
@@ -104,9 +122,16 @@ export async function runPipeline(
   // ── Step 6: Edit & assemble (Ken Burns FFmpeg) ───────────
   const videoPath = await runEditor(visuals.images, voice, music);
 
+  // Calculate orchestrator earnings (spread between request fee and total agent payments)
+  const requestFee = options?.requestFee ?? 0;
+  const orchestratorEarnings = requestFee > 0 ? Math.max(0, requestFee - totalCost) : 0;
+
   console.log("\n✅ [Pipeline] Complete!");
   console.log(`📹 [Pipeline] Video: ${videoPath}`);
-  console.log(`💰 [Pipeline] Total cost: $${totalCost.toFixed(4)} USDC`);
+  console.log(`💰 [Pipeline] Total agent payments: $${totalCost.toFixed(4)} USDC`);
+  if (orchestratorEarnings > 0) {
+    console.log(`🤖 [researcher] orchestrator earnings (spread): $${orchestratorEarnings.toFixed(4)} USDC`);
+  }
 
   return {
     videoPath,
@@ -114,5 +139,6 @@ export async function runPipeline(
     payments,
     headline: script.headline,
     requesterAddress: options?.requesterAddress,
+    orchestratorEarnings,
   };
 }
