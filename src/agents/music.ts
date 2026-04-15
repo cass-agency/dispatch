@@ -24,14 +24,27 @@ export async function runMusic(): Promise<MusicResult> {
   if (!taskId) { console.error("Suno gen response:", JSON.stringify(gen)); throw new Error("Suno: no taskId returned"); }
   console.log(`🎵 [Music] Task ${taskId} — polling...`);
 
-  for (let i = 0; i < 36; i++) {
+  for (let i = 0; i < 48; i++) {
     await new Promise((r) => setTimeout(r, 5000));
-    const poll = (await callWrapped("suno", "get-music-status", { taskId })) as { data?: SunoStatus };
+
+    // Retry up to 3 times on transient network errors before propagating
+    let poll: { data?: SunoStatus } | null = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        poll = (await callWrapped("suno", "get-music-status", { taskId })) as { data?: SunoStatus };
+        break;
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(`🎵 [Music] Status poll attempt ${attempt + 1} failed (${msg}) — retrying...`);
+        if (attempt < 2) await new Promise((r) => setTimeout(r, 3000));
+        else throw err; // rethrow after 3 failures
+      }
+    }
+
     const inner = poll?.data;
     console.log(`🎵 [Music] ${inner?.status}`);
 
     if (inner?.status === "SUCCESS") {
-      // data.response.sunoData[0].audioUrl
       const audioUrl = inner.response?.sunoData?.[0]?.audioUrl;
       if (!audioUrl) throw new Error("Suno SUCCESS but sunoData[0].audioUrl missing");
       logCost("music", 0.1, "Suno instrumental");
@@ -44,3 +57,4 @@ export async function runMusic(): Promise<MusicResult> {
   }
   throw new Error(`Suno task ${taskId} timed out`);
 }
+
