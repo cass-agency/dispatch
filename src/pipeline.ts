@@ -7,41 +7,42 @@ import { runEditor } from "./editor";
 import { pay, logCost } from "./locus";
 
 // ============================================================
-// Pipeline — main orchestration
-// Researcher is the orchestrator: receives the budget and pays each
-// specialist agent at MARKUP prices (not just cost). The markup is the
-// agent's profit margin on top of the actual API cost that Locus handles.
+// Pipeline — orchestrator model
+// Researcher is the orchestrator: receives budget, pays specialists
+// All Locus wrapped API calls route through the main claw_ wallet
+// Sub-agent wallets accumulate real USDC earnings
 // ============================================================
 
-// Real agent wallet addresses (wallets with private keys)
+// Real agent wallet addresses (funded wallets)
 const AGENT_ADDRESSES: Record<string, string> = {
-  researcher:   "0xA865aEA68e7f6B611a69c34669e349C0aAe1FDF5",   // orchestrator — earns the spread
-  scriptwriter: "0xA86e854Ef4cac10676E1c6f0f90e091b4b3f1598",
+  researcher:   "0xA865aEA68e7f6B611a69c34669e349C0aAe1FDF5", // cass-agency main (orchestrator)
+  scriptwriter: "0xA86e854Ef4cac10676E1c6f0f90e091b4b3f1598", // gifted wallet
   visual:       "0xF46F05E04e6e34621DF881B486AbE45eA3010617",
   voice:        "0x51fF2E55eF9687aCcC97b8dDa2983859104e56c8",
   music:        "0x60Be80b931836e60651B3Cb7800D5cAA7CE10a50",
 };
 
-// Markup prices — what orchestrator pays each agent (higher than actual API cost; agent pockets the margin)
+// Markup prices — what orchestrator pays to each specialist agent
+// (above actual API cost — margin stays with orchestrator/researcher wallet)
 const AGENT_COSTS: Record<string, number> = {
-  researcher:   0.00,   // orchestrator doesn't pay itself — it earns the spread
-  scriptwriter: 0.02,   // actual Locus cost ~$0.01, earns $0.01 margin
-  visual:       0.12,   // actual Locus cost ~$0.08, earns $0.04 margin
-  voice:        0.04,   // actual Locus cost ~$0.02, earns $0.02 margin
-  music:        0.15,   // actual Locus cost ~$0.10, earns $0.05 margin
+  researcher:   0.00,  // Orchestrator earns from margins; doesn't pay itself
+  scriptwriter: 0.02,  // API: ~$0.01  margin: $0.01
+  visual:       0.12,  // API: ~$0.08  margin: $0.04
+  voice:        0.04,  // API: ~$0.02  margin: $0.02
+  music:        0.15,  // API: ~$0.10  margin: $0.05
 };
 
-// Agent margins for display (markup price minus actual cost)
-const AGENT_MARGINS: Record<string, number> = {
-  researcher: 0, scriptwriter: 0.01, visual: 0.04, voice: 0.02, music: 0.05,
-};
+export type StepCallback = (
+  agent: string,
+  phase: "start" | "done",
+  log: string
+) => void;
 
 export interface Payment {
   agent: string;
   address: string;
   amount: number;
   memo: string;
-  margin: number;
 }
 
 export interface PipelineResult {
@@ -49,39 +50,24 @@ export interface PipelineResult {
   totalCost: number;
   payments: Payment[];
   headline: string;
-  requesterAddress?: string;
-  orchestratorEarnings: number;
 }
 
-export interface PipelineOptions {
-  requesterAddress?: string;
-  requestFee?: number;
-}
-
-async function payAgent(
-  agentName: string,
-  memo: string
-): Promise<Payment> {
+async function payAgent(agentName: string, memo: string): Promise<Payment> {
   const address = AGENT_ADDRESSES[agentName];
   const amount = AGENT_COSTS[agentName];
-  const margin = AGENT_MARGINS[agentName];
 
   logCost(agentName, amount, memo);
 
-  if (agentName === "researcher") {
-    console.log(`🤖 [researcher]  orchestrator  earns spread`);
-  } else {
-    const actualCost = amount - margin;
-    console.log(`🤖 [${agentName}] paid $${amount.toFixed(2)} (cost $${actualCost.toFixed(2)}, margin $${margin.toFixed(2)})`);
+  if (amount > 0) {
     await pay(address, amount, memo);
   }
 
-  return { agent: agentName, address, amount, memo, margin };
+  return { agent: agentName, address, amount, memo };
 }
 
 export async function runPipeline(
   topic = "AI agent economy breakthroughs",
-  options?: PipelineOptions
+  onStep?: StepCallback
 ): Promise<PipelineResult> {
   console.log("\n🚀 [Pipeline] Starting Dispatch news video pipeline...");
   console.log(`📰 [Pipeline] Topic: ${topic}\n`);
@@ -89,56 +75,54 @@ export async function runPipeline(
   const payments: Payment[] = [];
   let totalCost = 0;
 
-  // ── Step 1: Research ─────────────────────────────────────
+  // ── Step 1: Research ──────────────────────────────────────
+  onStep?.("researcher", "start", `🔍 Searching live news about "${topic}"...`);
   const research = await runResearcher(topic);
   const p1 = await payAgent("researcher", "Tavily news search");
   payments.push(p1);
   totalCost += p1.amount;
+  onStep?.("researcher", "done", `✅ Found ${research.articles.length} articles — researcher wallet credited`);
 
-  // ── Step 2: Scriptwriting ────────────────────────────────
+  // ── Step 2: Scriptwriting ─────────────────────────────────
+  onStep?.("scriptwriter", "start", "✍️  Writing 4-segment broadcast script with Claude...");
   const script = await runScriptwriter(research.summary);
-  const p2 = await payAgent("scriptwriter", "Claude Haiku script");
+  const p2 = await payAgent("scriptwriter", "Claude Haiku script generation");
   payments.push(p2);
   totalCost += p2.amount;
+  onStep?.("scriptwriter", "done", `✅ Script ready: "${script.headline}" — paid $${p2.amount.toFixed(2)} USDC`);
 
-  // ── Step 3: Visual generation ────────────────────────────
+  // ── Step 3: Visual generation ─────────────────────────────
+  onStep?.("visual", "start", `🎨 Generating ${script.segments.length} cinematic images with fal.ai Flux...`);
   const visuals = await runVisual(script.segments);
   const p3 = await payAgent("visual", "fal.ai flux image generation");
   payments.push(p3);
   totalCost += p3.amount;
+  onStep?.("visual", "done", `✅ ${visuals.images.length} images generated — paid $${p3.amount.toFixed(2)} USDC`);
 
-  // ── Step 4: Voice synthesis ──────────────────────────────
+  // ── Step 4: Voice synthesis ───────────────────────────────
+  onStep?.("voice", "start", "🎙️  Synthesizing broadcast narration with Deepgram...");
   const voice = await runVoice(script.segments);
   const p4 = await payAgent("voice", "Deepgram TTS narration");
   payments.push(p4);
   totalCost += p4.amount;
+  onStep?.("voice", "done", `✅ Narration ready (${voice.durationSeconds.toFixed(0)}s) — paid $${p4.amount.toFixed(2)} USDC`);
 
-  // ── Step 5: Music generation ─────────────────────────────
+  // ── Step 5: Music generation ──────────────────────────────
+  onStep?.("music", "start", "🎵 Composing original background score with Suno...");
   const music = await runMusic();
   const p5 = await payAgent("music", "Suno background music");
   payments.push(p5);
   totalCost += p5.amount;
+  onStep?.("music", "done", `✅ Score composed — paid $${p5.amount.toFixed(2)} USDC`);
 
-  // ── Step 6: Edit & assemble (Ken Burns FFmpeg) ───────────
+  // ── Step 6: Edit & assemble ───────────────────────────────
+  onStep?.("editor", "start", "🎬 Assembling video: Ken Burns motion + color grade + audio mix...");
   const videoPath = await runEditor(visuals.images, voice, music);
-
-  // Calculate orchestrator earnings (spread between request fee and total agent payments)
-  const requestFee = options?.requestFee ?? 0;
-  const orchestratorEarnings = requestFee > 0 ? Math.max(0, requestFee - totalCost) : 0;
+  onStep?.("editor", "done", `✅ Video assembled: ${videoPath.split("/").pop()}`);
 
   console.log("\n✅ [Pipeline] Complete!");
   console.log(`📹 [Pipeline] Video: ${videoPath}`);
-  console.log(`💰 [Pipeline] Total agent payments: $${totalCost.toFixed(4)} USDC`);
-  if (orchestratorEarnings > 0) {
-    console.log(`🤖 [researcher] orchestrator earnings (spread): $${orchestratorEarnings.toFixed(4)} USDC`);
-  }
+  console.log(`💰 [Pipeline] Total paid to agents: $${totalCost.toFixed(4)} USDC`);
 
-  return {
-    videoPath,
-    totalCost,
-    payments,
-    headline: script.headline,
-    requesterAddress: options?.requesterAddress,
-    orchestratorEarnings,
-  };
+  return { videoPath, totalCost, payments, headline: script.headline };
 }
