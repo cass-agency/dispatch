@@ -1,9 +1,10 @@
-import { callWrapped, logCost } from "../locus";
+import { callWrappedStream, logCost } from "../locus";
+import { ResearchBrief } from "./researcher";
 
 // ============================================================
 // Scriptwriter Agent
-// Takes research summary, writes 90-second video script
-// Uses Claude haiku
+// Takes research brief, writes 90-second video script
+// Uses Claude haiku via streaming
 // Cost: ~$0.01
 // ============================================================
 
@@ -64,8 +65,11 @@ const DEMO_SCRIPT: Script = {
   ],
 };
 
-export async function runScriptwriter(summary: string): Promise<Script> {
-  console.log("✍️ [Scriptwriter] Writing 90-second video script...");
+export async function runScriptwriter(
+  brief: ResearchBrief,
+  onToken?: (t: string) => void
+): Promise<Script> {
+  console.log("✍️ [Scriptwriter] Writing 4-segment broadcast script...");
 
   if (DEMO_MODE) {
     console.log("✍️ [Scriptwriter] DEMO MODE — returning placeholder script");
@@ -73,45 +77,46 @@ export async function runScriptwriter(summary: string): Promise<Script> {
     return DEMO_SCRIPT;
   }
 
-  const prompt = `You are a professional broadcast news scriptwriter. Based on the research summary below, write a 90-second video script for a news segment about the AI agent economy.
+  const prompt = `You are the head writer for Dispatch. The editorial director has briefed you.
 
-Research Summary:
-${summary}
+Editorial Brief:
+- Headline: ${brief.headline}
+- Angle: ${brief.angle}
+- Key Facts: ${brief.keyFacts.join("; ")}
+- Emotional Register: ${brief.emotionalRegister}
+- Mood: ${brief.mood}
+- Context: ${brief.context}
+- Full Brief: ${brief.summary}
 
-Return ONLY a valid JSON object with this exact structure:
+Write a 4-segment broadcast script (~90 seconds total). Return ONLY valid JSON:
 {
-  "headline": "compelling 10-word headline",
-  "mood": "3 comma-separated mood words",
+  "headline": "final broadcast headline",
+  "mood": "${brief.mood}",
   "totalDuration": 88,
   "segments": [
     {
       "title": "segment title",
-      "narration": "~100 words of broadcast narration",
-      "imagePrompt": "detailed Stable Diffusion image prompt, photorealistic, cinematic",
+      "narration": "~100 words of broadcast narration, written for spoken delivery",
+      "imagePrompt": "placeholder",
       "duration": 22
     }
   ]
 }
+4 segments, narrative arc: establish → develop → complicate → resolve. JSON only.`;
 
-Requirements:
-- Exactly 4 segments
-- Each narration ~100 words, suitable for TTS
-- Each imagePrompt is detailed, cinematic, photorealistic
-- mood describes the visual and emotional tone
-- totalDuration = 88 seconds
-- JSON only, no markdown, no extra text`;
-
-  const raw = (await callWrapped("anthropic", "chat", {
-    model: "claude-haiku-4-5",
-    messages: [{ role: "user", content: prompt }],
-    max_tokens: 1000,
-  })) as { content?: Array<{ text?: string }> };
-
-  const text = raw.content?.[0]?.text ?? "";
+  const text = await callWrappedStream(
+    "anthropic",
+    "chat",
+    {
+      model: "claude-haiku-4-5",
+      messages: [{ role: "user", content: prompt }],
+      max_tokens: 1200,
+    },
+    onToken ?? (() => {})
+  );
 
   let script: Script;
   try {
-    // Strip possible markdown code fences
     const cleaned = text.replace(/```json?\n?/g, "").replace(/```/g, "").trim();
     script = JSON.parse(cleaned) as Script;
   } catch {
