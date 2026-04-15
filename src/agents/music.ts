@@ -58,35 +58,58 @@ Return ONLY valid JSON:
     console.warn(`🎵 [Music] Music composition LLM failed, using default: ${(err as Error).message}`);
   }
 
+  // Sanitize Suno prompt — only musical/technical terms, never content/thematic words
+  // Suno blocks: war, crisis, collapse, geopolitical, violence, death, etc.
+  const BLOCKED = /\b(war|crisis|collapse|instability|crises|geopolitic|violence|death|blood|terror|nuclear|bomb|weapon|attack|conflict|destabiliz)\w*/gi;
+  const sanitized = sunoPrompt.replace(BLOCKED, "").replace(/\s+/g, " ").trim() ||
+    "cinematic orchestral news broadcast, pulsing strings, dramatic brass, driving rhythm";
+  if (sanitized !== sunoPrompt) {
+    console.log(`🎵 [Music] Prompt sanitized (content filter avoidance): "${sanitized}"`);
+    sunoPrompt = sanitized;
+  }
+
   console.log("🎵 [Music] Generating background music via Suno...");
 
-  // generate → { code, msg, data: { taskId } }
-  const gen = (await callWrapped("suno", "generate-music", {
-    customMode: true, instrumental: true, model: "V4",
-    style: sunoPrompt, title: sunoTitle,
-  })) as { data?: { taskId?: string } };
+  try {
+    // generate → { code, msg, data: { taskId } }
+    const gen = (await callWrapped("suno", "generate-music", {
+      customMode: true, instrumental: true, model: "V4",
+      style: sunoPrompt, title: sunoTitle,
+    })) as { data?: { taskId?: string } };
 
-  const taskId = gen?.data?.taskId;
-  if (!taskId) { console.error("Suno gen response:", JSON.stringify(gen)); throw new Error("Suno: no taskId returned"); }
-  console.log(`🎵 [Music] Task ${taskId} — polling...`);
-
-  for (let i = 0; i < 36; i++) {
-    await new Promise((r) => setTimeout(r, 5000));
-    const poll = (await callWrapped("suno", "get-music-status", { taskId })) as { data?: SunoStatus };
-    const inner = poll?.data;
-    console.log(`🎵 [Music] ${inner?.status}`);
-
-    if (inner?.status === "SUCCESS") {
-      // data.response.sunoData[0].audioUrl
-      const audioUrl = inner.response?.sunoData?.[0]?.audioUrl;
-      if (!audioUrl) throw new Error("Suno SUCCESS but sunoData[0].audioUrl missing");
-      logCost("music", 0.1, "Suno instrumental");
-      console.log(`🎵 [Music] Ready: ${audioUrl}`);
-      return { audioUrl };
+    const taskId = gen?.data?.taskId;
+    if (!taskId) {
+      console.error("🎵 [Music] Suno gen response:", JSON.stringify(gen));
+      console.warn("🎵 [Music] No taskId — skipping music");
+      return { audioUrl: "" };
     }
-    if (["CREATE_TASK_FAILED","GENERATE_AUDIO_FAILED","SENSITIVE_WORD_ERROR"].includes(inner?.status ?? "")) {
-      throw new Error(`Suno failed: ${inner?.status}`);
+    console.log(`🎵 [Music] Task ${taskId} — polling...`);
+
+    for (let i = 0; i < 36; i++) {
+      await new Promise((r) => setTimeout(r, 5000));
+      const poll = (await callWrapped("suno", "get-music-status", { taskId })) as { data?: SunoStatus };
+      const inner = poll?.data;
+      console.log(`🎵 [Music] ${inner?.status}`);
+
+      if (inner?.status === "SUCCESS") {
+        const audioUrl = inner.response?.sunoData?.[0]?.audioUrl;
+        if (!audioUrl) {
+          console.warn("🎵 [Music] SUCCESS but no audioUrl — skipping music");
+          return { audioUrl: "" };
+        }
+        logCost("music", 0.1, "Suno instrumental");
+        console.log(`🎵 [Music] Ready: ${audioUrl}`);
+        return { audioUrl };
+      }
+      if (["CREATE_TASK_FAILED","GENERATE_AUDIO_FAILED","SENSITIVE_WORD_ERROR"].includes(inner?.status ?? "")) {
+        console.warn(`🎵 [Music] Suno content filter/failure (${inner?.status}) — skipping music`);
+        return { audioUrl: "" };
+      }
     }
+    console.warn(`🎵 [Music] Suno task ${taskId} timed out — skipping music`);
+    return { audioUrl: "" };
+  } catch (err) {
+    console.warn(`🎵 [Music] Suno error — skipping music: ${(err as Error).message}`);
+    return { audioUrl: "" };
   }
-  throw new Error(`Suno task ${taskId} timed out`);
 }
