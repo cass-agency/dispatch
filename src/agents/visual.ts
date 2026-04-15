@@ -1,6 +1,7 @@
 import axios from "axios";
-import { callWrapped, logCost } from "../locus";
+import { callWrapped, callWrappedStream, logCost } from "../locus";
 import { Segment } from "./scriptwriter";
+import { ResearchBrief } from "./researcher";
 
 const DEMO_MODE = process.env.DEMO_MODE === "true";
 const IMAGE_MODEL = "fal-ai/flux/dev";
@@ -62,15 +63,64 @@ async function generateImage(prompt: string, segmentIndex: number): Promise<Visu
   return { url, segmentIndex };
 }
 
-export async function runVisual(segments: Segment[]): Promise<VisualResult> {
+export async function runVisual(
+  segments: Segment[],
+  script: { headline: string; mood: string },
+  brief: ResearchBrief,
+  onToken?: (t: string) => void
+): Promise<VisualResult> {
   if (DEMO_MODE) {
     logCost("visual", 0.08, "fal.ai flux/dev — demo");
     return DEMO_IMAGES;
   }
+
+  console.log(`🎨 [Visual] Running visual direction LLM reasoning...`);
+
+  // Visual director LLM reasoning
+  let imagePrompts: string[] = segments.map((s) => s.imagePrompt);
+  try {
+    const visualPrompt = `You are the visual director for Dispatch. Plan the cinematography for a 4-segment news broadcast.
+
+Story: ${script.headline}
+Mood: ${script.mood}
+Emotional register: ${brief.emotionalRegister}
+
+Narration by segment:
+${segments.map((s, i) => `[${i + 1}] "${s.title}": ${s.narration.slice(0, 150)}`).join("\n")}
+
+Design 4 image prompts with a coherent visual language (consistent color palette, lighting, composition style that evolves across the arc). Each image advances the visual story.
+
+Return ONLY valid JSON:
+{
+  "visualConcept": "one sentence describing the overall visual approach",
+  "imagePrompts": ["prompt1", "prompt2", "prompt3", "prompt4"]
+}`;
+
+    const visualText = await callWrappedStream(
+      "anthropic",
+      "chat",
+      {
+        model: "claude-haiku-4-5",
+        messages: [{ role: "user", content: visualPrompt }],
+        max_tokens: 600,
+      },
+      onToken ?? (() => {})
+    );
+
+    const cleaned = visualText.replace(/```json?\n?/g, "").replace(/```/g, "").trim();
+    const parsed = JSON.parse(cleaned) as { visualConcept?: string; imagePrompts?: string[] };
+    if (Array.isArray(parsed.imagePrompts) && parsed.imagePrompts.length === 4) {
+      imagePrompts = parsed.imagePrompts;
+      console.log(`🎨 [Visual] Visual concept: ${parsed.visualConcept}`);
+    }
+  } catch (err) {
+    console.warn(`🎨 [Visual] Visual direction LLM failed, using segment prompts: ${(err as Error).message}`);
+  }
+
   console.log(`🎨 [Visual] Generating ${segments.length} images...`);
   const images: VisualImage[] = [];
   for (let i = 0; i < segments.length; i++) {
-    images.push(await generateImage(segments[i].imagePrompt, i));
+    images.push(await generateImage(imagePrompts[i] ?? segments[i].imagePrompt, i));
   }
   logCost("visual", 0.08, `fal.ai flux/dev — ${segments.length} images`);
   return { images };
