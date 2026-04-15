@@ -1,5 +1,6 @@
-import { callWrapped, logCost } from "../locus";
+import { callWrapped, callWrappedStream, logCost } from "../locus";
 import { Segment } from "./scriptwriter";
+import { ResearchBrief } from "./researcher";
 
 const DEMO_MODE = process.env.DEMO_MODE === "true";
 
@@ -8,10 +9,55 @@ export interface VoiceResult {
   durationSeconds: number;
 }
 
-export async function runVoice(segments: Segment[]): Promise<VoiceResult> {
+export async function runVoice(
+  segments: Segment[],
+  brief: ResearchBrief,
+  onToken?: (t: string) => void
+): Promise<VoiceResult> {
+  console.log("🎙️ [Voice] Running voice direction LLM reasoning...");
+
+  // Voice director LLM reasoning — adapt narration for spoken delivery
+  let adaptedNarrations: string[] = segments.map((s) => s.narration);
+
+  if (!DEMO_MODE) {
+    try {
+      const voicePrompt = `You are the voice director for Dispatch. Adapt narration for spoken broadcast audio.
+
+Emotional register: ${brief.emotionalRegister}
+
+Rules: max 20 words per sentence, active voice only, remove parentheticals, natural spoken rhythm.
+
+Segments to adapt:
+${segments.map((s, i) => `[${i + 1}] ${s.narration}`).join("\n\n")}
+
+Return ONLY valid JSON:
+{ "adaptedNarration": ["segment 1 text", "segment 2 text", "segment 3 text", "segment 4 text"] }`;
+
+      const voiceText = await callWrappedStream(
+        "anthropic",
+        "chat",
+        {
+          model: "claude-haiku-4-5",
+          messages: [{ role: "user", content: voicePrompt }],
+          max_tokens: 800,
+        },
+        onToken ?? (() => {})
+      );
+
+      const cleaned = voiceText.replace(/```json?\n?/g, "").replace(/```/g, "").trim();
+      const parsed = JSON.parse(cleaned) as { adaptedNarration?: string[] };
+      if (Array.isArray(parsed.adaptedNarration) && parsed.adaptedNarration.length === segments.length) {
+        adaptedNarrations = parsed.adaptedNarration;
+        console.log("🎙️ [Voice] Narration adapted for spoken delivery");
+      }
+    } catch (err) {
+      console.warn(`🎙️ [Voice] Voice direction LLM failed, using original narration: ${(err as Error).message}`);
+    }
+  }
+
   console.log("🎙️ [Voice] Generating narration audio...");
 
-  const fullNarration = segments.map((s) => s.narration).join("  ");
+  const fullNarration = adaptedNarrations.join("  ");
 
   if (DEMO_MODE) {
     logCost("voice", 0.02, "Deepgram TTS (demo)");
