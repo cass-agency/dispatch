@@ -1,0 +1,15 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+
+# Secrets
+.env
+.env.local
+.env.*.local
+
+# Build artefacts
+*.tsbuildinfo
+
+# Runtime
+/tmp/

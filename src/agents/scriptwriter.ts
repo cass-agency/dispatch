@@ -1,5 +1,8 @@
 import { callWrappedStream, logCost } from "../locus";
+import { getAgentKey } from "../agent-keys";
 import { ResearchBrief } from "./researcher";
+
+const AGENT_KEY = () => getAgentKey("scriptwriter");
 
 // ============================================================
 // Scriptwriter Agent
@@ -112,7 +115,8 @@ Write a 4-segment broadcast script (~90 seconds total). Return ONLY valid JSON:
       messages: [{ role: "user", content: prompt }],
       max_tokens: 1200,
     },
-    onToken ?? (() => {})
+    onToken ?? (() => {}),
+    AGENT_KEY()
   );
 
   let script: Script;

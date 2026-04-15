@@ -5,6 +5,7 @@ import { runVoice } from "./agents/voice";
 import { runMusic } from "./agents/music";
 import { runEditor } from "./editor";
 import { pay, logCost } from "./locus";
+import { getAgentMode, AgentName } from "./agent-keys";
 
 // ============================================================
 // Pipeline — orchestrator model
@@ -13,13 +14,14 @@ import { pay, logCost } from "./locus";
 // Sub-agent wallets accumulate real USDC earnings
 // ============================================================
 
-// Real agent wallet addresses (funded wallets)
+// Real agent wallet addresses — each backed by its own Locus claw_ key
+// (discovered via: npx tsx src/scripts/discover-agent-wallets.ts)
 const AGENT_ADDRESSES: Record<string, string> = {
-  researcher:   "0xA865aEA68e7f6B611a69c34669e349C0aAe1FDF5", // cass-agency main (orchestrator)
-  scriptwriter: "0xA86e854Ef4cac10676E1c6f0f90e091b4b3f1598", // gifted wallet
-  visual:       "0xF46F05E04e6e34621DF881B486AbE45eA3010617",
-  voice:        "0x51fF2E55eF9687aCcC97b8dDa2983859104e56c8",
-  music:        "0x60Be80b931836e60651B3Cb7800D5cAA7CE10a50",
+  researcher:   "0x99ea943041e186b103a160e843e3e8ef47881c5c",
+  scriptwriter: "0x403760e3f06c126c687722897bf2d661cb8585a8",
+  visual:       "0x16ae9ba7ea3cbf57e632d5533ff01645fc901cdd",
+  voice:        "0x8fe8c382e5cbbd590e9eca04cbdf6ae17de89ed5",
+  music:        "0x053f33a2a7c03f6dd9000c9e1e956e9ea5833563",
 };
 
 // Markup prices — what orchestrator pays to each specialist agent
@@ -73,7 +75,17 @@ export async function runPipeline(
   onToken?: TokenCallback
 ): Promise<PipelineResult> {
   console.log("\n🚀 [Pipeline] Starting Dispatch news video pipeline...");
-  console.log(`📰 [Pipeline] Topic: ${topic}\n`);
+  console.log(`📰 [Pipeline] Topic: ${topic}`);
+
+  // Announce autonomy mode per agent
+  const modeAgents: AgentName[] = ["researcher", "scriptwriter", "visual", "voice", "music"];
+  const modes = modeAgents.map(getAgentMode);
+  const autoCount = modes.filter((m) => m.autonomous).length;
+  console.log(`🔐 [Pipeline] Autonomy: ${autoCount}/5 agents self-funding`);
+  modes.forEach((m) => {
+    console.log(`   ${m.autonomous ? "● AUTONOMOUS " : "○ ORCHESTRATOR"} ${m.agent.padEnd(12)} ${m.autonomous ? "(its own claw_ key)" : "(billed to main treasury)"}`);
+  });
+  console.log("");
 
   const payments: Payment[] = [];
   let totalCost = 0;

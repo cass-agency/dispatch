@@ -1,5 +1,8 @@
 import { callWrapped, callWrappedStream, logCost } from "../locus";
+import { getAgentKey } from "../agent-keys";
 import { ResearchBrief } from "./researcher";
+
+const AGENT_KEY = () => getAgentKey("music");
 
 const DEMO_MODE = process.env.DEMO_MODE === "true";
 export interface MusicResult { audioUrl: string; }
@@ -44,7 +47,8 @@ Return ONLY valid JSON:
         messages: [{ role: "user", content: musicPrompt }],
         max_tokens: 200,
       },
-      onToken ?? (() => {})
+      onToken ?? (() => {}),
+      AGENT_KEY()
     );
 
     const cleaned = musicText.replace(/```json?\n?/g, "").replace(/```/g, "").trim();
@@ -75,7 +79,7 @@ Return ONLY valid JSON:
     const gen = (await callWrapped("suno", "generate-music", {
       customMode: true, instrumental: true, model: "V4",
       style: sunoPrompt, title: sunoTitle,
-    })) as { data?: { taskId?: string } };
+    }, AGENT_KEY())) as { data?: { taskId?: string } };
 
     const taskId = gen?.data?.taskId;
     if (!taskId) {
@@ -87,7 +91,7 @@ Return ONLY valid JSON:
 
     for (let i = 0; i < 36; i++) {
       await new Promise((r) => setTimeout(r, 5000));
-      const poll = (await callWrapped("suno", "get-music-status", { taskId })) as { data?: SunoStatus };
+      const poll = (await callWrapped("suno", "get-music-status", { taskId }, AGENT_KEY())) as { data?: SunoStatus };
       const inner = poll?.data;
       console.log(`🎵 [Music] ${inner?.status}`);
 

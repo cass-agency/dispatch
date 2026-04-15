@@ -1,4 +1,7 @@
 import { callWrapped, callWrappedStream, logCost } from "../locus";
+import { getAgentKey } from "../agent-keys";
+
+const AGENT_KEY = () => getAgentKey("researcher");
 
 // ============================================================
 // Researcher Agent
@@ -89,7 +92,7 @@ export async function runResearcher(
     max_results: 5,
     days: 1,
     include_answer: true,
-  })) as {
+  }, AGENT_KEY())) as {
     results?: Array<{ title?: string; url?: string; content?: string }>;
     answer?: string;
   };
@@ -142,7 +145,8 @@ Return ONLY valid JSON (no markdown):
         messages: [{ role: "user", content: editorialPrompt }],
         max_tokens: 600,
       },
-      onToken ?? (() => {})
+      onToken ?? (() => {}),
+      AGENT_KEY()
     );
     const cleaned = briefText.replace(/```json?\n?/g, "").replace(/```/g, "").trim();
     brief = JSON.parse(cleaned) as ResearchBrief;

@@ -1,7 +1,10 @@
 import axios from "axios";
 import { callWrapped, callWrappedStream, logCost } from "../locus";
+import { getAgentKey } from "../agent-keys";
 import { Segment } from "./scriptwriter";
 import { ResearchBrief } from "./researcher";
+
+const AGENT_KEY = () => getAgentKey("visual");
 
 const DEMO_MODE = process.env.DEMO_MODE === "true";
 const IMAGE_MODEL = "fal-ai/flux/dev";
@@ -45,7 +48,7 @@ async function generateImage(prompt: string, segmentIndex: number): Promise<Visu
 
   const genRes = (await callWrapped("fal", "generate", {
     model: IMAGE_MODEL, prompt, num_images: 1,
-  })) as FalQueueResponse;
+  }, AGENT_KEY())) as FalQueueResponse;
 
   // Synchronous response (images already returned)
   if (genRes.images?.[0]?.url) {
@@ -104,7 +107,8 @@ Return ONLY valid JSON:
         messages: [{ role: "user", content: visualPrompt }],
         max_tokens: 600,
       },
-      onToken ?? (() => {})
+      onToken ?? (() => {}),
+      AGENT_KEY()
     );
 
     const cleaned = visualText.replace(/```json?\n?/g, "").replace(/```/g, "").trim();

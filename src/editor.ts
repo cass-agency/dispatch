@@ -2,7 +2,18 @@ import * as fs from "fs";
 import * as path from "path";
 import * as https from "https";
 import * as http from "http";
-import { execSync } from "child_process";
+import { spawn } from "child_process";
+
+function runFfmpeg(args: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn("ffmpeg", args, { stdio: "inherit" });
+    proc.on("error", reject);
+    proc.on("close", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`ffmpeg exited with code ${code}`));
+    });
+  });
+}
 import { VisualImage } from "./agents/visual";
 import { VoiceResult } from "./agents/voice";
 import { MusicResult } from "./agents/music";
@@ -85,19 +96,18 @@ export async function runEditor(
       `x='${ex}*(1-n/${lastFrame})':y='${ey}*n/${lastFrame}'`,           // TR → BL
     ];
     const pan = panDirections[i % 4];
-    const vf = `scale=2112:1188:force_original_aspect_ratio=increase,crop=2112:1188,crop=1920:1080:${pan}`;
-    const ffmpegCmd = [
-      "ffmpeg", "-y",
+    const vf = `scale=2112:1188:force_original_aspect_ratio=increase,crop=2112:1188,crop=1920:1080:${pan},format=yuv420p,colorspace=all=bt709:iall=bt709:fast=1`;
+    await runFfmpeg([
+      "-y",
       "-loop", "1",
-      "-i", `"${imgPath}"`,
-      "-vf", `"${vf}"`,
+      "-i", imgPath,
+      "-vf", vf,
       "-frames:v", String(clipFrames),
       "-c:v", "libx264",
       "-preset", "ultrafast",
       "-pix_fmt", "yuv420p",
-      `"${clipPath}"`
-    ].join(" ");
-    execSync(ffmpegCmd, { stdio: "inherit" });
+      clipPath,
+    ]);
     clipPaths.push(clipPath);
 
     // Cleanup image
@@ -132,29 +142,46 @@ export async function runEditor(
 
   // Concatenate clips
   console.log("🎞️ [Editor] Concatenating video clips...");
-  execSync(
-    `ffmpeg -y -f concat -safe 0 -i "${concatListPath}" -c copy "${concatenatedPath}"`,
-    { stdio: "inherit" }
-  );
+  await runFfmpeg([
+    "-y",
+    "-f", "concat",
+    "-safe", "0",
+    "-i", concatListPath,
+    "-c", "copy",
+    concatenatedPath,
+  ]);
 
   // 5. Mix audio and mux with video
   if (musicPath) {
-    // Voice + music mix
     console.log("🎞️ [Editor] Mixing narration + music, muxing final video...");
-    execSync(
-      `ffmpeg -y -i "${concatenatedPath}" -i "${voicePath}" -i "${musicPath}" ` +
-      `-filter_complex "[2:a]volume=0.3[music];[1:a][music]amix=inputs=2:duration=first[audio]" ` +
-      `-map 0:v -map "[audio]" -c:v copy -c:a aac -shortest "${outputPath}"`,
-      { stdio: "inherit" }
-    );
+    await runFfmpeg([
+      "-y",
+      "-i", concatenatedPath,
+      "-i", voicePath,
+      "-i", musicPath,
+      "-filter_complex", "[2:a]volume=0.3[music];[1:a][music]amix=inputs=2:duration=first[audio]",
+      "-map", "0:v",
+      "-map", "[audio]",
+      "-c:v", "copy",
+      "-c:a", "aac",
+      "-movflags", "+faststart",
+      "-shortest",
+      outputPath,
+    ]);
   } else {
-    // Voice only
     console.log("🎞️ [Editor] Muxing video with narration only (no music)...");
-    execSync(
-      `ffmpeg -y -i "${concatenatedPath}" -i "${voicePath}" ` +
-      `-map 0:v -map 1:a -c:v copy -c:a aac -shortest "${outputPath}"`,
-      { stdio: "inherit" }
-    );
+    await runFfmpeg([
+      "-y",
+      "-i", concatenatedPath,
+      "-i", voicePath,
+      "-map", "0:v",
+      "-map", "1:a",
+      "-c:v", "copy",
+      "-c:a", "aac",
+      "-movflags", "+faststart",
+      "-shortest",
+      outputPath,
+    ]);
   }
 
   // Cleanup temp files

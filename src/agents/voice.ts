@@ -1,6 +1,9 @@
 import { callWrapped, callWrappedStream, logCost } from "../locus";
+import { getAgentKey } from "../agent-keys";
 import { Segment } from "./scriptwriter";
 import { ResearchBrief } from "./researcher";
+
+const AGENT_KEY = () => getAgentKey("voice");
 
 const DEMO_MODE = process.env.DEMO_MODE === "true";
 
@@ -41,7 +44,8 @@ Return ONLY valid JSON:
           messages: [{ role: "user", content: voicePrompt }],
           max_tokens: 800,
         },
-        onToken ?? (() => {})
+        onToken ?? (() => {}),
+        AGENT_KEY()
       );
 
       const cleaned = voiceText.replace(/```json?\n?/g, "").replace(/```/g, "").trim();
@@ -94,7 +98,7 @@ Return ONLY valid JSON:
       text: chunk,
       model: "aura-2-thalia-en",
       encoding: "mp3",
-    })) as { data?: string; content_type?: string };
+    }, AGENT_KEY())) as { data?: string; content_type?: string };
 
     // Deepgram returns { data: "<base64 mp3>", content_type: "audio/mpeg" }
     const audioBase64 = raw.data;
