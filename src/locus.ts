@@ -4,14 +4,7 @@ const LOCUS_BASE = "https://beta-api.paywithlocus.com";
 
 let _client: AxiosInstance | null = null;
 
-function getClient(apiKey?: string): AxiosInstance {
-  if (apiKey) {
-    return axios.create({
-      baseURL: LOCUS_BASE,
-      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      timeout: 120_000,
-    });
-  }
+function getClient(): AxiosInstance {
   if (!_client) {
     const key = process.env.LOCUS_API_KEY;
     if (!key) throw new Error("LOCUS_API_KEY environment variable is not set");
@@ -48,10 +41,9 @@ export async function callWrapped(
 export async function pay(
   toAddress: string,
   amount: number,
-  memo: string,
-  apiKey?: string
+  memo: string
 ): Promise<unknown> {
-  const client = getClient(apiKey);
+  const client = getClient();
   try {
     const response = await client.post("/api/pay/send", { to_address: toAddress, amount, memo });
     return response.data;
@@ -68,3 +60,81 @@ export async function pay(
 export function logCost(agentName: string, cost: number, description: string): void {
   console.log(`[COST] 💰 ${agentName.padEnd(12)} $${(cost).toFixed(4)} USDC  — ${description}`);
 }
+
+export async function callWrappedStream(
+  provider: string,
+  endpoint: string,
+  body: Record<string, unknown>,
+  onToken: (t: string) => void
+): Promise<string> {
+  const key = process.env.LOCUS_API_KEY;
+  if (!key) throw new Error("LOCUS_API_KEY environment variable is not set");
+
+  const path = `/api/wrapped/${provider}/${endpoint}`;
+  const url = `${LOCUS_BASE}${path}`;
+
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${key}`,
+        "Content-Type": "application/json",
+        Accept: "text/event-stream",
+      },
+      body: JSON.stringify({ ...body, stream: true }),
+    });
+
+    const contentType = response.headers.get("content-type") ?? "";
+
+    if (!contentType.includes("text/event-stream")) {
+      // Not SSE — fall back to regular call
+      throw new Error(`Non-SSE response: ${contentType}`);
+    }
+
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error("No response body reader");
+
+    const decoder = new TextDecoder();
+    let accumulated = "";
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        const dataStr = line.slice(6).trim();
+        if (dataStr === "[DONE]") continue;
+        try {
+          const event = JSON.parse(dataStr) as {
+            type?: string;
+            delta?: { type?: string; text?: string };
+          };
+          if (event.type === "content_block_delta" && event.delta?.text) {
+            onToken(event.delta.text);
+            accumulated += event.delta.text;
+          }
+        } catch {
+          // ignore parse errors for non-JSON lines
+        }
+      }
+    }
+
+    return accumulated;
+  } catch (err) {
+    // Fall back to regular callWrapped
+    console.warn(`[locus] callWrappedStream falling back to callWrapped: ${(err as Error).message}`);
+    const result = await callWrapped(provider, endpoint, body);
+    // Extract text from Anthropic-style response
+    const raw = result as { content?: Array<{ text?: string }> };
+    const text = raw.content?.[0]?.text ?? String(result);
+    onToken(text);
+    return text;
+  }
+}
+
