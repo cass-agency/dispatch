@@ -2,7 +2,7 @@ import express, { Request, Response } from "express";
 import * as path from "path";
 import * as fs from "fs";
 import * as dotenv from "dotenv";
-import { runPipeline, PipelineResult, StepCallback } from "./pipeline";
+import { runPipeline, PipelineResult, StepCallback, TokenCallback } from "./pipeline";
 
 dotenv.config();
 
@@ -37,6 +37,8 @@ interface JobRecord {
   startedAt: string;
   steps: JobStep[];
   logs: string[];
+  streamListeners: import('express').Response[];
+  tokenBuffer: Array<{ agent: string; token: string }>;
 }
 
 // ────────────────────────────────────────────────────────────
@@ -306,6 +308,8 @@ app.get("/", (_req: Request, res: Response) => {
     .log-line { color: #4ade80; }
     .log-line.dim { color: #475569; }
     .log-line.err { color: #f87171; }
+    .log-line .stext { word-break: break-word; }
+    .stream-agent { color: #60a5fa; font-weight: 600; }
 
     /* ── Video section ── */
     .video-section { margin-bottom: 40px; }
@@ -569,6 +573,47 @@ app.get("/", (_req: Request, res: Response) => {
   let startTime = null;
   let timerInterval = null;
   let lastLogCount = 0;
+  let activeEs = null;
+
+  function startStreaming(jobId) {
+    if (activeEs) { activeEs.close(); activeEs = null; }
+    const termBody = document.getElementById('terminal-body');
+    const agentLines = {}; // agent -> current text span
+
+    const es = new EventSource('/api/jobs/' + jobId + '/stream');
+    activeEs = es;
+
+    const agentEmoji = { researcher: '📍', scriptwriter: '✍️', visual: '🎨', voice: '🎙️', music: '🎵', editor: '🎬' };
+
+    es.onmessage = function(evt) {
+      try {
+        const data = JSON.parse(evt.data);
+        if (data.type === 'done') { es.close(); activeEs = null; return; }
+        const { agent, token } = data;
+        if (!agent || token === undefined) return;
+
+        // On newlines in token, close current line
+        if (token.includes('\\n') && agentLines[agent]) {
+          delete agentLines[agent];
+          return;
+        }
+
+        if (!agentLines[agent]) {
+          const row = document.createElement('div');
+          row.className = 'log-line';
+          row.innerHTML = '<span class="stream-agent">' + (agentEmoji[agent] || '🤖') + ' [' + agent + ']</span> <span class="stext" style="color:#4ade80"></span>';
+          termBody.appendChild(row);
+          agentLines[agent] = row.querySelector('.stext');
+        }
+
+        agentLines[agent].textContent += token;
+        termBody.scrollTop = termBody.scrollHeight;
+      } catch(e) {}
+    };
+
+    es.onerror = function() { es.close(); activeEs = null; };
+    return es;
+  }
 
   function generate() {
     const btn = document.getElementById('generateBtn');
@@ -605,6 +650,7 @@ app.get("/", (_req: Request, res: Response) => {
     .then(data => {
       if (data.error) { handleError(data.error); return; }
       addLog('✅ Job ID: ' + data.jobId + ' — pipeline initialised', 'dim');
+      startStreaming(data.jobId);
       schedulePoll(data.jobId);
     })
     .catch(err => handleError('Network error: ' + err.message));
@@ -635,11 +681,8 @@ app.get("/", (_req: Request, res: Response) => {
         });
       }
 
-      // Append new log lines
-      if (job.logs && job.logs.length > lastLogCount) {
-        job.logs.slice(lastLogCount).forEach(line => addLog(line));
-        lastLogCount = job.logs.length;
-      }
+      // SSE handles terminal logs — only update step statuses via polling
+      // (no addLog calls for job.logs here)
 
       if (job.status === 'running') {
         schedulePoll(jobId);
@@ -749,6 +792,8 @@ app.post("/generate", async (req: Request, res: Response) => {
     startedAt,
     steps: STEP_NAMES.map((name) => ({ name, status: "pending" })),
     logs: [],
+    streamListeners: [],
+    tokenBuffer: [],
   };
   jobs.set(jobId, job);
 
@@ -768,10 +813,27 @@ app.post("/generate", async (req: Request, res: Response) => {
     console.log(`  ↳ [${agent}/${phase}] ${log}`);
   };
 
-  runPipeline(topic, onStep)
+  const onToken: TokenCallback = (agent, token) => {
+    const item = { agent, token };
+    job.tokenBuffer.push(item);
+    if (job.tokenBuffer.length > 20000) job.tokenBuffer.shift();
+    job.streamListeners.forEach((res) => {
+      try { res.write(`data: ${JSON.stringify(item)}\n\n`); } catch {}
+    });
+  };
+
+  const closeStreams = (status: string) => {
+    job.streamListeners.forEach((res) => {
+      try { res.write(`data: ${JSON.stringify({ type: "done", status })}\n\n`); res.end(); } catch {}
+    });
+    job.streamListeners = [];
+  };
+
+  runPipeline(topic, onStep, onToken)
     .then((result) => {
       job.status = "done";
       job.result = result;
+      closeStreams("done");
     })
     .catch((err: unknown) => {
       const message = err instanceof Error ? err.message : String(err);
@@ -779,9 +841,33 @@ app.post("/generate", async (req: Request, res: Response) => {
       job.status = "error";
       job.error = message;
       job.logs.push(`❌ Pipeline failed: ${message}`);
+      closeStreams("error");
     });
 
   res.json({ jobId, status: "running" });
+});
+
+// ────────────────────────────────────────────────────────────
+// GET /api/jobs/:jobId/stream — SSE token stream
+// ────────────────────────────────────────────────────────────
+
+app.get("/api/jobs/:jobId/stream", (req: Request, res: Response) => {
+  const job = jobs.get(req.params.jobId);
+  if (!job) { res.status(404).end(); return; }
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders();
+  // replay buffered tokens
+  job.tokenBuffer.forEach((item) => {
+    try { res.write(`data: ${JSON.stringify(item)}\n\n`); } catch {}
+  });
+  job.streamListeners.push(res);
+  req.on("close", () => {
+    const idx = job.streamListeners.indexOf(res);
+    if (idx > -1) job.streamListeners.splice(idx, 1);
+  });
 });
 
 // ────────────────────────────────────────────────────────────
