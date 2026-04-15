@@ -2,26 +2,18 @@ import express, { Request, Response } from "express";
 import * as path from "path";
 import * as fs from "fs";
 import * as dotenv from "dotenv";
-import axios from "axios";
-import { runPipeline, PipelineResult } from "./pipeline";
-import { pay } from "./locus";
+import { runPipeline, PipelineResult, StepCallback } from "./pipeline";
 
 dotenv.config();
-
-// ============================================================
-// Dispatch Express Server — port 8080
-// ============================================================
 
 const app = express();
 app.use(express.json());
 
 const PORT = process.env.PORT ?? 8080;
 
-// Marketplace constants
-const DISPATCH_WALLET = "0x70e04a5576a6065923c081de413feb34cbe1bedf";
-const REQUEST_FEE = 0.50;   // USDC charged to requester to commission a video
-const VIEW_PRICE = 0.05;    // USDC charged to viewer per watch
-const REQUESTER_SHARE = 0.40; // 40% of view revenue goes to requester
+// ────────────────────────────────────────────────────────────
+// Types
+// ────────────────────────────────────────────────────────────
 
 interface VideoRecord {
   filename: string;
@@ -30,27 +22,31 @@ interface VideoRecord {
   payments: PipelineResult["payments"];
   createdAt: string;
   topic: string;
-  requesterAddress?: string;
-  viewPrice: number;
-  viewCount: number;
-  totalRevenue: number;
 }
 
-// In-memory store — last 20 videos (array for history, Map for O(1) id lookup)
-const videoHistory: VideoRecord[] = [];
-const videoById = new Map<string, VideoRecord>();
+interface JobStep {
+  name: string;
+  status: "pending" | "running" | "done" | "error";
+}
 
-// In-memory jobs map
-const jobs = new Map<
-  string,
-  {
-    status: "running" | "done" | "error";
-    result?: PipelineResult;
-    error?: string;
-    topic: string;
-    startedAt: string;
-  }
->();
+interface JobRecord {
+  status: "running" | "done" | "error";
+  result?: PipelineResult;
+  error?: string;
+  topic: string;
+  startedAt: string;
+  steps: JobStep[];
+  logs: string[];
+}
+
+// ────────────────────────────────────────────────────────────
+// State
+// ────────────────────────────────────────────────────────────
+
+const STEP_NAMES = ["researcher", "scriptwriter", "visual", "voice", "music", "editor"];
+
+const videoHistory: VideoRecord[] = [];
+const jobs = new Map<string, JobRecord>();
 
 // ────────────────────────────────────────────────────────────
 // Routes
@@ -68,16 +64,46 @@ app.get("/", (_req: Request, res: Response) => {
     .map(
       (v) => `
       <tr>
-        <td>${v.createdAt}</td>
-        <td>${escHtml(v.headline)}</td>
-        <td>${escHtml(v.topic)}</td>
-        <td>$${v.cost.toFixed(4)}</td>
-        <td>${v.viewCount}</td>
-        <td>$${(v.totalRevenue).toFixed(4)}</td>
-        <td><a href="/video/${encodeURIComponent(v.filename)}" target="_blank">&#9654; Watch ($${VIEW_PRICE.toFixed(2)})</a></td>
+        <td style="color:#94a3b8">${v.createdAt.replace("T", " ").slice(0, 19)}</td>
+        <td style="font-weight:600">${escHtml(v.headline)}</td>
+        <td style="color:#94a3b8">${escHtml(v.topic)}</td>
+        <td style="color:#22c55e;font-family:monospace">$${v.cost.toFixed(4)}</td>
+        <td><a href="/video/${encodeURIComponent(v.filename)}" target="_blank" style="display:inline-flex;align-items:center;gap:4px;background:rgba(59,130,246,0.1);border:1px solid rgba(59,130,246,0.3);padding:4px 10px;border-radius:6px;font-size:0.75rem;color:#60a5fa">▶ Watch</a></td>
       </tr>`
     )
     .join("");
+
+  // Ticker items — recent headlines or defaults
+  const tickerItems = videoHistory.length > 0
+    ? videoHistory.map(v => `<span><span class="ticker-label">DISPATCH</span>${escHtml(v.headline)}</span>`).join(" &nbsp;·&nbsp; ")
+    : `<span><span class="ticker-label">DISPATCH</span>Autonomous AI news generation — powered by Locus</span>
+       <span><span class="ticker-label">LIVE</span>Six AI agents · Research → Script → Visuals → Voice → Music → Edit</span>
+       <span><span class="ticker-label">NEW</span>Each agent earns real USDC on task completion</span>
+       <span><span class="ticker-label">DISPATCH</span>Enter a topic to generate a broadcast</span>`;
+
+  // Latest video block
+  const latestVideoBlock = latest ? `
+  <div class="video-wrapper" style="margin-top:0">
+    <div class="video-header">
+      <div class="now-playing-badge">Latest Broadcast</div>
+      <div class="video-headline">${escHtml(latest.headline)}</div>
+      <div class="video-meta">$${latest.cost.toFixed(4)} USDC &nbsp;·&nbsp; ${latest.createdAt.replace("T"," ").slice(0,19)}</div>
+    </div>
+    <video controls src="/video/${encodeURIComponent(latest.filename)}"></video>
+    <div class="payment-breakdown">
+      ${latest.payments.filter(p => p.amount > 0).map(p => `
+        <div class="payment-item">
+          <div class="payment-agent">${p.agent}</div>
+          <div class="payment-amount">+$${p.amount.toFixed(2)}</div>
+          <div class="payment-addr">${p.address.slice(0,6)}…${p.address.slice(-4)}</div>
+        </div>`).join("")}
+    </div>
+  </div>` : `
+  <div style="background:#0e0e1c;border:1px solid #1e1e3a;border-radius:16px;padding:48px;text-align:center;color:#475569">
+    <div style="font-size:3rem;margin-bottom:16px">📡</div>
+    <div style="font-size:1rem;font-weight:600;color:#64748b">No broadcasts yet</div>
+    <div style="font-size:0.85rem;margin-top:8px">Generate your first AI news video above</div>
+  </div>`;
 
   const html = `<!DOCTYPE html>
 <html lang="en">
@@ -86,220 +112,619 @@ app.get("/", (_req: Request, res: Response) => {
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Dispatch — Autonomous AI News Network</title>
   <style>
+    :root {
+      --bg: #06060f;
+      --surface: #0e0e1c;
+      --surface2: #12122a;
+      --border: #1e1e3a;
+      --blue: #3b82f6;
+      --blue-dim: rgba(59,130,246,0.15);
+      --blue-glow: rgba(59,130,246,0.3);
+      --green: #22c55e;
+      --red: #ef4444;
+      --text: #e2e8f0;
+      --muted: #64748b;
+      --accent: #60a5fa;
+    }
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { background: #0a0a0f; color: #e2e8f0; font-family: 'Segoe UI', system-ui, sans-serif; min-height: 100vh; }
-    header { background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); border-bottom: 1px solid #2d3748; padding: 24px 40px; display: flex; align-items: center; gap: 16px; }
-    header h1 { font-size: 2rem; font-weight: 800; letter-spacing: -0.5px; color: #fff; }
-    header .badge { background: #3182ce; color: #fff; font-size: 0.65rem; padding: 2px 8px; border-radius: 9999px; font-weight: 700; text-transform: uppercase; }
-    .container { max-width: 1100px; margin: 0 auto; padding: 40px 24px; }
-    .hero { background: linear-gradient(135deg, #1e3a5f 0%, #1a1a2e 100%); border: 1px solid #2d3748; border-radius: 16px; padding: 32px; margin-bottom: 32px; }
-    .hero h2 { font-size: 1.25rem; color: #90cdf4; margin-bottom: 8px; }
-    .hero .headline { font-size: 1.6rem; font-weight: 700; line-height: 1.3; margin-bottom: 16px; }
-    .hero .meta { font-size: 0.85rem; color: #718096; }
-    .marketplace-box { background: linear-gradient(135deg, #1a2e1a 0%, #1a1a2e 100%); border: 1px solid #2d4a2d; border-radius: 16px; padding: 28px 32px; margin-bottom: 32px; }
-    .marketplace-box h2 { font-size: 1.15rem; color: #68d391; margin-bottom: 12px; }
-    .marketplace-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; margin-top: 16px; }
-    .marketplace-card { background: #1a1a2e; border: 1px solid #2d3748; border-radius: 10px; padding: 18px; }
-    .marketplace-card h3 { font-size: 0.95rem; color: #f6e05e; margin-bottom: 8px; }
-    .marketplace-card p { font-size: 0.82rem; color: #a0aec0; line-height: 1.5; }
-    .marketplace-card .amount { font-size: 1.1rem; font-weight: 700; color: #68d391; margin-top: 8px; }
-    .generate-form { display: flex; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
-    .generate-form input { flex: 1; min-width: 260px; background: #1a1a2e; border: 1px solid #2d3748; color: #e2e8f0; border-radius: 8px; padding: 12px 16px; font-size: 1rem; outline: none; }
-    .generate-form input:focus { border-color: #3182ce; }
-    .generate-form button { background: #3182ce; color: #fff; border: none; border-radius: 8px; padding: 12px 28px; font-size: 1rem; font-weight: 600; cursor: pointer; transition: background 0.2s; }
-    .generate-form button:hover { background: #2b6cb0; }
-    .generate-form button:disabled { background: #4a5568; cursor: not-allowed; }
-    .request-form { background: #1a1a2e; border: 1px solid #2d3748; border-radius: 10px; padding: 20px; margin-bottom: 32px; }
-    .request-form h3 { color: #90cdf4; margin-bottom: 14px; font-size: 1rem; }
-    .request-form .field { margin-bottom: 12px; }
-    .request-form label { display: block; font-size: 0.8rem; color: #a0aec0; margin-bottom: 4px; }
-    .request-form input { width: 100%; background: #0f0f1a; border: 1px solid #2d3748; color: #e2e8f0; border-radius: 6px; padding: 10px 14px; font-size: 0.9rem; outline: none; }
-    .request-form input:focus { border-color: #68d391; }
-    .request-form button { background: #276749; color: #fff; border: none; border-radius: 8px; padding: 10px 24px; font-size: 0.95rem; font-weight: 600; cursor: pointer; }
-    .request-form button:hover { background: #2f855a; }
-    .pipeline-steps { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; margin-bottom: 40px; }
-    .step { background: #1a1a2e; border: 1px solid #2d3748; border-radius: 10px; padding: 16px; text-align: center; }
-    .step .icon { font-size: 1.8rem; margin-bottom: 8px; }
-    .step .label { font-size: 0.8rem; color: #a0aec0; }
-    .step .cost { font-size: 0.75rem; color: #68d391; margin-top: 4px; }
-    table { width: 100%; border-collapse: collapse; background: #1a1a2e; border: 1px solid #2d3748; border-radius: 10px; overflow: hidden; }
-    thead { background: #16213e; }
-    th, td { padding: 12px 16px; text-align: left; font-size: 0.875rem; border-bottom: 1px solid #2d3748; }
-    th { color: #90cdf4; font-weight: 600; text-transform: uppercase; font-size: 0.75rem; letter-spacing: 0.05em; }
+    body { background: var(--bg); color: var(--text); font-family: -apple-system, 'Segoe UI', system-ui, sans-serif; min-height: 100vh; }
+
+    /* ── Header ── */
+    header {
+      background: linear-gradient(180deg, #0c0c22 0%, #08081a 100%);
+      border-bottom: 1px solid var(--border);
+      padding: 0 40px;
+      height: 68px;
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    .on-air {
+      display: flex; align-items: center; gap: 6px;
+      background: rgba(239,68,68,0.12);
+      border: 1px solid rgba(239,68,68,0.35);
+      border-radius: 4px;
+      padding: 5px 10px;
+      font-size: 0.65rem; font-weight: 800;
+      color: #ef4444; letter-spacing: 0.15em;
+      text-transform: uppercase; flex-shrink: 0;
+    }
+    .on-air-dot {
+      width: 7px; height: 7px; border-radius: 50%;
+      background: #ef4444;
+      animation: blink 1.4s ease-in-out infinite;
+    }
+    .logo { font-size: 1.45rem; font-weight: 900; letter-spacing: -0.5px; color: #fff; }
+    .tagline { font-size: 0.7rem; color: var(--muted); margin-top: 2px; letter-spacing: 0.04em; text-transform: uppercase; }
+    .locus-badge {
+      margin-left: auto; display: flex; align-items: center; gap: 8px;
+      font-size: 0.75rem; color: var(--muted);
+    }
+    .locus-badge strong { color: #60a5fa; font-weight: 700; }
+    .locus-pill {
+      background: rgba(96,165,250,0.1); border: 1px solid rgba(96,165,250,0.25);
+      border-radius: 20px; padding: 4px 12px; font-size: 0.7rem; color: #60a5fa;
+      letter-spacing: 0.04em;
+    }
+
+    /* ── Ticker ── */
+    .ticker {
+      background: #080816; border-bottom: 1px solid var(--border);
+      height: 34px; overflow: hidden; display: flex; align-items: center;
+    }
+    .ticker-inner { overflow: hidden; flex: 1; }
+    .ticker-track {
+      display: inline-flex; gap: 60px; white-space: nowrap;
+      padding: 0 40px; font-size: 0.72rem; color: #94a3b8;
+      animation: ticker-scroll 40s linear infinite;
+    }
+    .ticker-label {
+      display: inline-block;
+      background: rgba(59,130,246,0.12); color: #60a5fa;
+      font-size: 0.6rem; font-weight: 800; text-transform: uppercase;
+      letter-spacing: 0.12em; padding: 1px 6px; border-radius: 2px;
+      margin-right: 6px; vertical-align: middle;
+    }
+
+    /* ── Layout ── */
+    .container { max-width: 1200px; margin: 0 auto; padding: 40px 24px; }
+
+    /* ── Vision card ── */
+    .vision-card {
+      background: linear-gradient(135deg, rgba(59,130,246,0.06) 0%, var(--surface) 100%);
+      border: 1px solid rgba(59,130,246,0.2);
+      border-radius: 16px; padding: 32px 36px; margin-bottom: 40px;
+      display: grid; grid-template-columns: 1fr auto; gap: 24px; align-items: center;
+    }
+    .vision-title { font-size: 1.5rem; font-weight: 800; letter-spacing: -0.3px; margin-bottom: 10px; }
+    .vision-title span { color: #60a5fa; }
+    .vision-desc { font-size: 0.9rem; color: #94a3b8; line-height: 1.65; max-width: 620px; }
+    .vision-stats { display: flex; flex-direction: column; gap: 12px; flex-shrink: 0; }
+    .stat-item { text-align: right; }
+    .stat-number { font-size: 1.6rem; font-weight: 900; color: #60a5fa; font-variant-numeric: tabular-nums; }
+    .stat-label { font-size: 0.65rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; }
+
+    /* ── Generate ── */
+    .section-label {
+      font-size: 0.65rem; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.12em; color: var(--muted); margin-bottom: 12px;
+    }
+    .generate-form { display: flex; gap: 12px; flex-wrap: wrap; }
+    .generate-form input {
+      flex: 1; min-width: 280px;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; padding: 14px 18px;
+      font-size: 0.95rem; color: var(--text); outline: none;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+    .generate-form input:focus {
+      border-color: var(--blue);
+      box-shadow: 0 0 0 3px rgba(59,130,246,0.1);
+    }
+    .btn-generate {
+      background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+      color: #fff; border: none; border-radius: 10px;
+      padding: 14px 32px; font-size: 0.95rem; font-weight: 700;
+      cursor: pointer; letter-spacing: 0.02em;
+      transition: all 0.2s; white-space: nowrap;
+      box-shadow: 0 2px 12px rgba(37,99,235,0.3);
+    }
+    .btn-generate:hover { background: linear-gradient(135deg, #1d4ed8 0%, #1e40af 100%); transform: translateY(-1px); box-shadow: 0 6px 20px rgba(37,99,235,0.4); }
+    .btn-generate:active { transform: translateY(0); }
+    .btn-generate:disabled { background: #1e293b; color: #475569; cursor: not-allowed; transform: none; box-shadow: none; }
+
+    /* ── Pipeline ── */
+    .pipeline-section { margin-bottom: 40px; }
+    .pipeline-scroll { overflow-x: auto; padding-bottom: 4px; }
+    .pipeline-flow { display: flex; align-items: center; min-width: max-content; }
+
+    .agent-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 12px; padding: 16px 14px;
+      width: 156px; flex-shrink: 0;
+      transition: border-color 0.3s, box-shadow 0.3s;
+      position: relative; cursor: default;
+    }
+    .agent-card.running {
+      border-color: var(--blue);
+      box-shadow: 0 0 0 1px var(--blue), 0 0 28px rgba(59,130,246,0.22);
+      animation: card-glow 1.8s ease-in-out infinite;
+    }
+    .agent-card.done { border-color: rgba(34,197,94,0.45); }
+    .agent-card.error { border-color: rgba(239,68,68,0.45); }
+
+    .status-dot {
+      position: absolute; top: 12px; right: 12px;
+      width: 7px; height: 7px; border-radius: 50%;
+      background: #334155; transition: background 0.3s;
+    }
+    .agent-card.running .status-dot { background: var(--blue); animation: dot-blink 0.9s ease-in-out infinite; }
+    .agent-card.done .status-dot { background: var(--green); }
+    .agent-card.error .status-dot { background: var(--red); }
+
+    .agent-icon { font-size: 1.5rem; margin-bottom: 8px; display: block; }
+    .agent-name { font-size: 0.82rem; font-weight: 700; color: var(--text); margin-bottom: 3px; }
+    .agent-wallet { font-size: 0.6rem; color: #475569; font-family: 'Courier New', monospace; margin-bottom: 8px; letter-spacing: -0.02em; }
+    .agent-earn { font-size: 0.72rem; font-weight: 600; color: var(--green); }
+    .agent-earn.zero { color: #475569; }
+    .agent-role { font-size: 0.62rem; color: #475569; text-transform: uppercase; letter-spacing: 0.06em; margin-top: 2px; }
+
+    .pipeline-connector {
+      width: 28px; height: 2px;
+      background: var(--border); flex-shrink: 0;
+      position: relative; overflow: hidden;
+    }
+    .pipeline-connector.active::after {
+      content: ''; position: absolute; inset: 0;
+      background: linear-gradient(90deg, transparent, var(--blue), transparent);
+      animation: flow-line 0.8s linear infinite;
+    }
+
+    /* ── Terminal ── */
+    #log-terminal {
+      background: #030308; border: 1px solid var(--border);
+      border-radius: 12px; overflow: hidden; margin-top: 20px;
+      display: none;
+    }
+    .terminal-bar {
+      background: #0a0a18; padding: 10px 16px;
+      border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; gap: 8px;
+    }
+    .term-dots { display: flex; gap: 5px; }
+    .term-dot { width: 10px; height: 10px; border-radius: 50%; }
+    .td-r { background: #ef4444; } .td-y { background: #f59e0b; } .td-g { background: #22c55e; }
+    .term-title { font-size: 0.68rem; color: #475569; letter-spacing: 0.05em; text-transform: uppercase; margin-left: 4px; }
+    .term-timer { margin-left: auto; font-size: 0.68rem; color: #475569; font-family: monospace; }
+    .terminal-body {
+      padding: 14px 18px; max-height: 220px; overflow-y: auto;
+      font-family: 'Courier New', monospace; font-size: 0.78rem; line-height: 1.75;
+    }
+    .log-line { color: #4ade80; }
+    .log-line.dim { color: #475569; }
+    .log-line.err { color: #f87171; }
+
+    /* ── Video section ── */
+    .video-section { margin-bottom: 40px; }
+    .video-wrapper {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 16px; overflow: hidden;
+    }
+    .video-header {
+      padding: 16px 20px; border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    }
+    .now-playing-badge {
+      background: rgba(239,68,68,0.12); border: 1px solid rgba(239,68,68,0.35);
+      color: #ef4444; font-size: 0.62rem; font-weight: 800;
+      text-transform: uppercase; letter-spacing: 0.12em;
+      padding: 3px 8px; border-radius: 3px; flex-shrink: 0;
+      animation: blink 2s ease-in-out infinite;
+    }
+    .video-headline { font-size: 1rem; font-weight: 700; flex: 1; min-width: 200px; }
+    .video-meta { font-size: 0.75rem; color: var(--muted); flex-shrink: 0; }
+    video { width: 100%; display: block; background: #000; max-height: 540px; }
+    .payment-breakdown {
+      padding: 16px 20px; border-top: 1px solid var(--border);
+      display: flex; flex-wrap: wrap; gap: 20px; align-items: center;
+    }
+    .breakdown-label { font-size: 0.65rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; margin-right: 4px; }
+    .payment-item { display: flex; flex-direction: column; gap: 1px; }
+    .payment-agent { font-size: 0.65rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+    .payment-amount { font-size: 0.875rem; font-weight: 700; color: var(--green); font-family: monospace; }
+    .payment-addr { font-size: 0.58rem; color: #334155; font-family: monospace; }
+
+    /* ── History ── */
+    .history-section { margin-bottom: 40px; }
+    .table-wrapper { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+    table { width: 100%; border-collapse: collapse; }
+    thead { background: rgba(30,30,58,0.6); }
+    th, td { padding: 12px 16px; text-align: left; font-size: 0.8rem; border-bottom: 1px solid var(--border); }
+    th { color: var(--muted); font-weight: 700; text-transform: uppercase; font-size: 0.63rem; letter-spacing: 0.1em; }
     tr:last-child td { border-bottom: none; }
-    a { color: #63b3ed; text-decoration: none; }
+    tr:hover td { background: rgba(255,255,255,0.015); }
+    a { color: var(--accent); text-decoration: none; }
     a:hover { text-decoration: underline; }
-    #status { background: #1a2035; border: 1px solid #2d3748; border-radius: 10px; padding: 20px; margin-top: 20px; font-family: monospace; font-size: 0.875rem; color: #68d391; white-space: pre-wrap; max-height: 220px; overflow-y: auto; display: none; }
-    #reqStatus { background: #1a2035; border: 1px solid #2d3748; border-radius: 10px; padding: 16px; margin-top: 12px; font-family: monospace; font-size: 0.85rem; color: #68d391; white-space: pre-wrap; display: none; }
-    .section-title { font-size: 1.1rem; font-weight: 700; color: #90cdf4; margin-bottom: 16px; }
+
+    /* ── Footer ── */
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 24px 40px; text-align: center;
+      font-size: 0.72rem; color: #334155;
+    }
+
+    /* ── Keyframes ── */
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.35} }
+    @keyframes ticker-scroll { from{transform:translateX(0)} to{transform:translateX(-50%)} }
+    @keyframes card-glow {
+      0%,100%{ box-shadow: 0 0 0 1px var(--blue), 0 0 28px rgba(59,130,246,0.22); }
+      50%{ box-shadow: 0 0 0 1px var(--blue), 0 0 42px rgba(59,130,246,0.38); }
+    }
+    @keyframes dot-blink { 0%,100%{opacity:1} 50%{opacity:0.3} }
+    @keyframes flow-line { from{transform:translateX(-100%)} to{transform:translateX(100%)} }
+    @keyframes fade-in { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
+
+    /* ── Scrollbar ── */
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 3px; }
+
+    /* ── Responsive ── */
+    @media(max-width:700px){
+      header { padding: 0 16px; }
+      .container { padding: 24px 16px; }
+      .vision-card { grid-template-columns: 1fr; }
+      .vision-stats { flex-direction: row; flex-wrap: wrap; }
+      .stat-item { text-align: left; }
+      .locus-badge span:not(.locus-pill) { display: none; }
+    }
   </style>
 </head>
 <body>
+
+<!-- ═══ HEADER ═══ -->
 <header>
+  <div class="on-air"><div class="on-air-dot"></div>ON AIR</div>
   <div>
-    <h1>&#128225; Dispatch</h1>
-    <p style="color:#718096;font-size:0.85rem;margin-top:4px;">Autonomous AI News Video Network — powered by Locus</p>
+    <div class="logo">📡 Dispatch</div>
+    <div class="tagline">Autonomous AI News Video Network</div>
   </div>
-  <span class="badge">Live</span>
+  <div class="locus-badge">
+    <span>Powered by</span>
+    <strong>LOCUS</strong>
+    <span>·</span>
+    <span class="locus-pill">Hackathon 2026</span>
+  </div>
 </header>
-<div class="container">
-  ${
-    latest
-      ? `<div class="hero">
-    <h2>Latest Broadcast</h2>
-    <div class="headline">${escHtml(latest.headline)}</div>
-    <div class="meta">Topic: ${escHtml(latest.topic)} &nbsp;&middot;&nbsp; Cost: $${latest.cost.toFixed(4)} USDC &nbsp;&middot;&nbsp; ${latest.createdAt}</div>
-    <div style="margin-top:16px;"><a href="/video/${encodeURIComponent(latest.filename)}">&#9654; Watch Video</a></div>
-  </div>`
-      : `<div class="hero"><h2>No videos yet</h2><p style="color:#718096;margin-top:8px;">Commission your first AI news video below.</p></div>`
-  }
 
-  <div class="marketplace-box">
-    <h2>&#127916; Dispatch Marketplace</h2>
-    <p style="color:#a0aec0;font-size:0.9rem;line-height:1.6;">Dispatch is a pay-to-request, pay-to-watch AI news video marketplace. Commission a video on any topic and earn 40% of every view it receives — forever. Viewers pay a small USDC fee to watch, and revenue flows directly on-chain via Locus agent payments.</p>
-    <div class="marketplace-grid">
-      <div class="marketplace-card">
-        <h3>&#128176; Commission a Video</h3>
-        <p>Submit any news topic and a $${REQUEST_FEE.toFixed(2)} USDC request fee. Dispatch's AI pipeline (researcher, scriptwriter, visual, voice, music agents) produces a broadcast-ready video.</p>
-        <div class="amount">$${REQUEST_FEE.toFixed(2)} USDC to commission</div>
-      </div>
-      <div class="marketplace-card">
-        <h3>&#127757; Earn Revenue Share</h3>
-        <p>As the video's requester, you earn <strong>40%</strong> of every $${VIEW_PRICE.toFixed(2)} USDC view fee — automatically paid to your wallet via Locus each time someone watches your video.</p>
-        <div class="amount">40% of $${VIEW_PRICE.toFixed(2)}/view = $${(VIEW_PRICE * REQUESTER_SHARE).toFixed(3)}/view</div>
-      </div>
-      <div class="marketplace-card">
-        <h3>&#128250; Pay to Watch</h3>
-        <p>Access any video in the archive for just $${VIEW_PRICE.toFixed(2)} USDC. Your payment is split: 40% to the requester who commissioned it, 60% to Dispatch to fund ongoing agent infrastructure.</p>
-        <div class="amount">$${VIEW_PRICE.toFixed(2)} USDC per view</div>
-      </div>
+<!-- ═══ TICKER ═══ -->
+<div class="ticker">
+  <div class="ticker-inner">
+    <div class="ticker-track">
+      ${tickerItems} &nbsp;&nbsp;&nbsp;&nbsp; ${tickerItems}
     </div>
   </div>
-
-  <div class="section-title">Commission a New Video</div>
-  <div class="request-form">
-    <h3>Request a topic — pay $${REQUEST_FEE.toFixed(2)} USDC, earn revenue share</h3>
-    <div class="field">
-      <label>Topic</label>
-      <input id="reqTopic" type="text" placeholder="e.g. AI agent economy breakthroughs" value="AI agent economy breakthroughs" />
-    </div>
-    <div class="field">
-      <label>Your Wallet Address (receives 40% of view revenue)</label>
-      <input id="reqAddress" type="text" placeholder="0x..." />
-    </div>
-    <div class="field">
-      <label>Your Locus API Key (used to charge $${REQUEST_FEE.toFixed(2)} commission fee)</label>
-      <input id="reqApiKey" type="password" placeholder="locus_..." />
-    </div>
-    <button onclick="requestVideo()">&#128176; Pay & Commission ($${REQUEST_FEE.toFixed(2)} USDC)</button>
-    <div id="reqStatus"></div>
-  </div>
-
-  <div class="section-title">Quick Generate (no fee)</div>
-  <div class="generate-form">
-    <input id="topicInput" type="text" placeholder="Topic (e.g. AI agent economy breakthroughs)" value="AI agent economy breakthroughs" />
-    <button id="generateBtn" onclick="generate()">&#128640; Generate</button>
-  </div>
-  <div id="status"></div>
-
-  <div class="section-title" style="margin-top:40px;">Pipeline Agents</div>
-  <div class="pipeline-steps">
-    <div class="step"><div class="icon">&#128205;</div><div class="label">Researcher</div><div class="cost">$0.09</div></div>
-    <div class="step"><div class="icon">&#9998;&#65039;</div><div class="label">Scriptwriter</div><div class="cost">$0.01</div></div>
-    <div class="step"><div class="icon">&#127912;</div><div class="label">Visual</div><div class="cost">$0.08</div></div>
-    <div class="step"><div class="icon">&#127916;</div><div class="label">Editor</div><div class="cost">$0.00</div></div>
-    <div class="step"><div class="icon">&#127897;&#65039;</div><div class="label">Voice</div><div class="cost">$0.02</div></div>
-    <div class="step"><div class="icon">&#127925;</div><div class="label">Music</div><div class="cost">$0.10</div></div>
-  </div>
-
-  ${
-    videoHistory.length > 0
-      ? `<div class="section-title">Video Archive</div>
-  <table>
-    <thead><tr><th>Created</th><th>Headline</th><th>Topic</th><th>Cost</th><th>Views</th><th>Revenue</th><th>Watch</th></tr></thead>
-    <tbody>${historyRows}</tbody>
-  </table>`
-      : ""
-  }
 </div>
-<script>
-async function requestVideo() {
-  const topic = document.getElementById('reqTopic').value || 'AI agent economy breakthroughs';
-  const requesterAddress = document.getElementById('reqAddress').value.trim();
-  const locusApiKey = document.getElementById('reqApiKey').value.trim();
-  const statusEl = document.getElementById('reqStatus');
-  statusEl.style.display = 'block';
-  if (!requesterAddress) { statusEl.textContent = 'Please enter your wallet address.'; return; }
-  if (!locusApiKey) { statusEl.textContent = 'Please enter your Locus API key.'; return; }
-  statusEl.textContent = 'Charging commission fee...';
-  try {
-    const res = await fetch('/request', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ topic, requesterAddress, locusApiKey })
-    });
-    const data = await res.json();
-    if (data.error) { statusEl.textContent = 'Error: ' + data.error; return; }
-    statusEl.textContent = 'Commission paid! Job started: ' + data.jobId + '\nProcessing';
-    const jobId = data.jobId;
-    const poll = async () => {
-      const pollRes = await fetch('/api/jobs/' + jobId);
-      const job = await pollRes.json();
-      if (job.status === 'running') { statusEl.textContent += '.'; setTimeout(poll, 3000); }
-      else if (job.status === 'done') {
-        statusEl.textContent += '\n\nDone! ' + job.headline + '\nVideo: ' + job.videoUrl;
-        setTimeout(() => location.reload(), 2000);
-      } else { statusEl.textContent += '\nError: ' + job.error; }
-    };
-    setTimeout(poll, 3000);
-  } catch(e) { statusEl.textContent = 'Network error: ' + e.message; }
-}
 
-async function generate() {
-  const btn = document.getElementById('generateBtn');
-  const statusEl = document.getElementById('status');
-  const topic = document.getElementById('topicInput').value || 'AI agent economy breakthroughs';
-  btn.disabled = true;
-  btn.textContent = 'Starting...';
-  statusEl.style.display = 'block';
-  statusEl.textContent = 'Submitting job...\n';
-  try {
-    const res = await fetch('/generate', {
+<div class="container">
+
+  <!-- ═══ VISION ═══ -->
+  <div class="vision-card">
+    <div>
+      <div class="vision-title">The world's first <span>autonomous AI</span> news network</div>
+      <div class="vision-desc">
+        Six specialist agents — each with a Locus smart wallet — collaborate end-to-end to produce original news broadcasts.
+        A researcher finds stories, a scriptwriter crafts the narrative, a visual agent renders cinematic images,
+        a voice agent narrates, a music agent composes the score, and an editor assembles the final video.
+        Every agent earns real <strong style="color:#22c55e">USDC</strong> for their contribution via Locus Pay.
+        No human in the loop. No central server of truth. Just agents doing work and getting paid.
+      </div>
+    </div>
+    <div class="vision-stats">
+      <div class="stat-item">
+        <div class="stat-number">6</div>
+        <div class="stat-label">AI Agents</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-number" style="color:#22c55e">$0.33</div>
+        <div class="stat-label">Avg. Agent Pay</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-number">${videoHistory.length}</div>
+        <div class="stat-label">Broadcasts</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ GENERATE ═══ -->
+  <section style="margin-bottom:40px">
+    <div class="section-label">Commission a Broadcast</div>
+    <div class="generate-form">
+      <input id="topicInput" type="text"
+        placeholder="Enter a news topic (e.g. AI agent economy, quantum computing, climate tech...)"
+        value="AI agent economy breakthroughs" />
+      <button class="btn-generate" id="generateBtn" onclick="generate()">🚀 Broadcast</button>
+    </div>
+  </section>
+
+  <!-- ═══ PIPELINE ═══ -->
+  <section class="pipeline-section">
+    <div class="section-label">Live Agent Pipeline</div>
+    <div class="pipeline-scroll">
+      <div class="pipeline-flow" id="pipeline-flow">
+
+        <div class="agent-card pending" data-agent="researcher">
+          <div class="status-dot"></div>
+          <span class="agent-icon">📍</span>
+          <div class="agent-name">Researcher</div>
+          <div class="agent-wallet">0xA865…FDF5</div>
+          <div class="agent-earn zero">orchestrator</div>
+          <div class="agent-role">Tavily Search</div>
+        </div>
+
+        <div class="pipeline-connector"></div>
+
+        <div class="agent-card pending" data-agent="scriptwriter">
+          <div class="status-dot"></div>
+          <span class="agent-icon">✍️</span>
+          <div class="agent-name">Scriptwriter</div>
+          <div class="agent-wallet">0xA86e…1598</div>
+          <div class="agent-earn">earns $0.02</div>
+          <div class="agent-role">Claude Haiku</div>
+        </div>
+
+        <div class="pipeline-connector"></div>
+
+        <div class="agent-card pending" data-agent="visual">
+          <div class="status-dot"></div>
+          <span class="agent-icon">🎨</span>
+          <div class="agent-name">Visual</div>
+          <div class="agent-wallet">0xF46F…0617</div>
+          <div class="agent-earn">earns $0.12</div>
+          <div class="agent-role">fal.ai Flux</div>
+        </div>
+
+        <div class="pipeline-connector"></div>
+
+        <div class="agent-card pending" data-agent="voice">
+          <div class="status-dot"></div>
+          <span class="agent-icon">🎙️</span>
+          <div class="agent-name">Voice</div>
+          <div class="agent-wallet">0x51fF…56c8</div>
+          <div class="agent-earn">earns $0.04</div>
+          <div class="agent-role">Deepgram TTS</div>
+        </div>
+
+        <div class="pipeline-connector"></div>
+
+        <div class="agent-card pending" data-agent="music">
+          <div class="status-dot"></div>
+          <span class="agent-icon">🎵</span>
+          <div class="agent-name">Music</div>
+          <div class="agent-wallet">0x60Be…0a50</div>
+          <div class="agent-earn">earns $0.15</div>
+          <div class="agent-role">Suno AI</div>
+        </div>
+
+        <div class="pipeline-connector"></div>
+
+        <div class="agent-card pending" data-agent="editor">
+          <div class="status-dot"></div>
+          <span class="agent-icon">🎬</span>
+          <div class="agent-name">Editor</div>
+          <div class="agent-wallet" style="color:#1e293b">on-chain assembly</div>
+          <div class="agent-earn zero">free</div>
+          <div class="agent-role">FFmpeg + Ken Burns</div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Live terminal -->
+    <div id="log-terminal">
+      <div class="terminal-bar">
+        <div class="term-dots">
+          <div class="term-dot td-r"></div>
+          <div class="term-dot td-y"></div>
+          <div class="term-dot td-g"></div>
+        </div>
+        <span class="term-title">Pipeline Log</span>
+        <span class="term-timer" id="elapsed-timer">0s elapsed</span>
+      </div>
+      <div class="terminal-body" id="terminal-body"></div>
+    </div>
+  </section>
+
+  <!-- ═══ VIDEO SECTION ═══ -->
+  <section class="video-section" id="video-section" style="${latest ? "" : "display:none"}">
+    <div class="section-label" style="margin-bottom:16px">Latest Broadcast</div>
+    ${latestVideoBlock}
+  </section>
+
+  <!-- ═══ HISTORY ═══ -->
+  ${videoHistory.length > 1 ? `
+  <section class="history-section">
+    <div class="section-label" style="margin-bottom:16px">All Broadcasts (${videoHistory.length})</div>
+    <div class="table-wrapper">
+      <table>
+        <thead><tr><th>Time</th><th>Headline</th><th>Topic</th><th>Cost (USDC)</th><th>Watch</th></tr></thead>
+        <tbody>${historyRows}</tbody>
+      </table>
+    </div>
+  </section>` : ""}
+
+</div><!-- /container -->
+
+<footer>
+  Dispatch — Autonomous AI News Video Network &nbsp;·&nbsp;
+  Built on <strong style="color:#60a5fa">Locus</strong> &nbsp;·&nbsp;
+  Agents earn real USDC &nbsp;·&nbsp; Hackathon 2026
+</footer>
+
+<script>
+  let pollTimer = null;
+  let startTime = null;
+  let timerInterval = null;
+  let lastLogCount = 0;
+
+  function generate() {
+    const btn = document.getElementById('generateBtn');
+    const topic = document.getElementById('topicInput').value.trim() || 'AI agent economy breakthroughs';
+
+    btn.disabled = true;
+    btn.textContent = '⏳ Generating...';
+
+    // Reset pipeline cards
+    document.querySelectorAll('.agent-card').forEach(c => { c.className = 'agent-card pending'; });
+    document.querySelectorAll('.pipeline-connector').forEach(c => c.classList.remove('active'));
+
+    // Show terminal
+    const terminal = document.getElementById('log-terminal');
+    const termBody = document.getElementById('terminal-body');
+    terminal.style.display = 'block';
+    termBody.innerHTML = '';
+    lastLogCount = 0;
+    addLog('🚀 Dispatching pipeline for topic: "' + topic + '"', 'dim');
+
+    // Start timer
+    startTime = Date.now();
+    if (timerInterval) clearInterval(timerInterval);
+    timerInterval = setInterval(updateTimer, 1000);
+    updateTimer();
+
+    // Submit job
+    fetch('/generate', {
       method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({topic})
-    });
-    const data = await res.json();
-    if (data.error) {
-      statusEl.textContent += '\nError: ' + data.error;
-      btn.disabled = false; btn.textContent = 'Generate'; return;
-    }
-    const jobId = data.jobId;
-    statusEl.textContent += 'Job started: ' + jobId + '\nProcessing';
-    btn.textContent = 'Generating...';
-    const poll = async () => {
-      try {
-        const pollRes = await fetch('/api/jobs/' + jobId);
-        const job = await pollRes.json();
-        if (job.status === 'running') { statusEl.textContent += '.'; setTimeout(poll, 3000); }
-        else if (job.status === 'done') {
-          statusEl.textContent += '\n\nDone! Headline: ' + job.headline;
-          statusEl.textContent += '\nCost: $' + job.cost.toFixed(4) + ' USDC';
-          if (job.videoUrl) statusEl.textContent += '\nVideo: ' + job.videoUrl;
-          btn.disabled = false; btn.textContent = 'Generate';
-          setTimeout(() => location.reload(), 2000);
-        } else {
-          statusEl.textContent += '\nError: ' + job.error;
-          btn.disabled = false; btn.textContent = 'Generate';
-        }
-      } catch(e) { statusEl.textContent += '\nPoll error: ' + e.message; btn.disabled = false; btn.textContent = 'Generate'; }
-    };
-    setTimeout(poll, 3000);
-  } catch(e) {
-    statusEl.textContent += '\nNetwork error: ' + e.message;
-    btn.disabled = false; btn.textContent = 'Generate';
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ topic })
+    })
+    .then(r => r.json())
+    .then(data => {
+      if (data.error) { handleError(data.error); return; }
+      addLog('✅ Job ID: ' + data.jobId + ' — pipeline initialised', 'dim');
+      schedulePoll(data.jobId);
+    })
+    .catch(err => handleError('Network error: ' + err.message));
   }
-}
+
+  function schedulePoll(jobId) {
+    pollTimer = setTimeout(() => pollJob(jobId), 2000);
+  }
+
+  function pollJob(jobId) {
+    fetch('/api/jobs/' + jobId)
+    .then(r => r.json())
+    .then(job => {
+      // Update agent cards and connectors
+      if (job.steps) {
+        const connectors = document.querySelectorAll('.pipeline-connector');
+        job.steps.forEach((step, i) => {
+          const card = document.querySelector('[data-agent="' + step.name + '"]');
+          if (card) {
+            card.className = 'agent-card ' + step.status;
+          }
+          if (i > 0 && step.status === 'running' && connectors[i-1]) {
+            connectors[i-1].classList.add('active');
+          }
+          if (step.status === 'done' && connectors[i]) {
+            connectors[i].classList.add('active');
+          }
+        });
+      }
+
+      // Append new log lines
+      if (job.logs && job.logs.length > lastLogCount) {
+        job.logs.slice(lastLogCount).forEach(line => addLog(line));
+        lastLogCount = job.logs.length;
+      }
+
+      if (job.status === 'running') {
+        schedulePoll(jobId);
+      } else if (job.status === 'done') {
+        clearInterval(timerInterval);
+        addLog('✅ Pipeline complete — total paid: $' + job.cost.toFixed(4) + ' USDC');
+        showVideo(job.videoUrl, job.headline, job.cost, job.payments);
+        const btn = document.getElementById('generateBtn');
+        btn.disabled = false;
+        btn.textContent = '🚀 Broadcast';
+        setTimeout(() => location.reload(), 5000);
+      } else {
+        clearInterval(timerInterval);
+        addLog('❌ Pipeline error: ' + job.error, 'err');
+        const btn = document.getElementById('generateBtn');
+        btn.disabled = false;
+        btn.textContent = '🚀 Broadcast';
+      }
+    })
+    .catch(() => {
+      // retry silently on network hiccup
+      schedulePoll(jobId);
+    });
+  }
+
+  function showVideo(url, headline, cost, payments) {
+    const section = document.getElementById('video-section');
+    section.style.display = 'block';
+    section.style.animation = 'fade-in 0.5s ease';
+
+    const payHtml = payments
+      ? payments.filter(p => p.amount > 0).map(p =>
+          '<div class="payment-item">' +
+          '<div class="payment-agent">' + p.agent + '</div>' +
+          '<div class="payment-amount">+$' + p.amount.toFixed(2) + '</div>' +
+          '<div class="payment-addr">' + p.address.slice(0,6) + '\\u2026' + p.address.slice(-4) + '</div>' +
+          '</div>'
+        ).join('') : '';
+
+    section.innerHTML =
+      '<div class="section-label" style="margin-bottom:16px">Latest Broadcast</div>' +
+      '<div class="video-wrapper">' +
+        '<div class="video-header">' +
+          '<div class="now-playing-badge">Now Playing</div>' +
+          '<div class="video-headline">' + escHtmlJs(headline) + '</div>' +
+          '<div class="video-meta">$' + cost.toFixed(4) + ' USDC</div>' +
+        '</div>' +
+        '<video id="main-video" controls autoplay src="' + url + '"></video>' +
+        '<div class="payment-breakdown">' +
+          '<span class="breakdown-label">Agent payments →</span>' +
+          payHtml +
+        '</div>' +
+      '</div>';
+
+    section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  function addLog(msg, cls) {
+    const body = document.getElementById('terminal-body');
+    if (!body) return;
+    const div = document.createElement('div');
+    div.className = 'log-line' + (cls ? ' ' + cls : '');
+    const ts = new Date().toLocaleTimeString('en-US', { hour12: false, hour:'2-digit', minute:'2-digit', second:'2-digit' });
+    div.textContent = '[' + ts + '] ' + msg;
+    body.appendChild(div);
+    body.scrollTop = body.scrollHeight;
+  }
+
+  function handleError(msg) {
+    addLog(msg, 'err');
+    clearInterval(timerInterval);
+    const btn = document.getElementById('generateBtn');
+    if (btn) { btn.disabled = false; btn.textContent = '🚀 Broadcast'; }
+  }
+
+  function updateTimer() {
+    const el = document.getElementById('elapsed-timer');
+    if (!el || !startTime) return;
+    const s = Math.floor((Date.now() - startTime) / 1000);
+    el.textContent = s < 60 ? s + 's elapsed' : Math.floor(s/60) + 'm ' + (s%60) + 's elapsed';
+  }
+
+  function escHtmlJs(str) {
+    return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
 </script>
 </body>
 </html>`;
@@ -307,148 +732,61 @@ async function generate() {
   res.send(html);
 });
 
-// ── POST /request — pay to commission a video ────────────────
-app.post("/request", async (req: Request, res: Response) => {
-  const { topic, requesterAddress, locusApiKey } = req.body ?? {};
-  if (!topic) { res.status(400).json({ error: "topic is required" }); return; }
-  if (!requesterAddress) { res.status(400).json({ error: "requesterAddress is required" }); return; }
-  if (!locusApiKey) { res.status(400).json({ error: "locusApiKey is required" }); return; }
-
-  // Charge REQUEST_FEE from requester to Dispatch wallet using their API key
-  try {
-    await pay(DISPATCH_WALLET, REQUEST_FEE, `Dispatch commission: ${topic}`, locusApiKey);
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[Server] Commission fee payment failed: ${msg}`);
-    res.status(402).json({ error: `Commission payment failed: ${msg}` });
-    return;
-  }
-
-  const jobId = Date.now().toString(36);
-  const startedAt = new Date().toISOString();
-  console.log(`\n[Server] POST /request — topic: "${topic}" requester: ${requesterAddress} jobId: ${jobId}`);
-
-  jobs.set(jobId, { status: "running", topic, startedAt });
-
-  runPipeline(topic, { requesterAddress, requestFee: REQUEST_FEE })
-    .then((result) => {
-      jobs.set(jobId, { status: "done", result, topic, startedAt });
-    })
-    .catch((err: unknown) => {
-      const message = err instanceof Error ? err.message : String(err);
-      console.error(`[Server] Pipeline error for job ${jobId}:`, message);
-      jobs.set(jobId, { status: "error", error: message, topic, startedAt });
-    });
-
-  res.json({ jobId, status: "running", fee: REQUEST_FEE });
-});
-
-// ── GET /videos — list all generated videos ──────────────────
-app.get("/videos", (_req: Request, res: Response) => {
-  const list = [...videoHistory].reverse().map((v) => ({
-    id: v.filename.replace(/\.mp4$/, ""),
-    filename: v.filename,
-    headline: v.headline,
-    topic: v.topic,
-    cost: v.cost,
-    createdAt: v.createdAt,
-    requesterAddress: v.requesterAddress ?? null,
-    viewPrice: v.viewPrice,
-    viewCount: v.viewCount,
-    totalRevenue: v.totalRevenue,
-    videoUrl: `/video/${encodeURIComponent(v.filename)}`,
-  }));
-  res.json({ videos: list });
-});
-
-// ── POST /videos/:id/watch — pay to watch, revenue share ─────
-app.post("/videos/:id/watch", async (req: Request, res: Response) => {
-  const video = videoById.get(req.params.id);
-  if (!video) { res.status(404).json({ error: "Video not found" }); return; }
-
-  const viewerApiKey: string = req.body?.locusApiKey;
-  if (!viewerApiKey) {
-    res.status(402).json({
-      error: "Payment required",
-      price: video.viewPrice,
-      currency: "USDC",
-      dispatchWallet: DISPATCH_WALLET,
-      instruction: "Include your Locus API key as locusApiKey to pay and watch"
-    });
-    return;
-  }
-
-  // Charge viewer using THEIR API key to send from their wallet to Dispatch
-  try {
-    const viewerClient = axios.create({
-      baseURL: "https://beta-api.paywithlocus.com",
-      headers: { Authorization: `Bearer ${viewerApiKey}`, "Content-Type": "application/json" },
-      timeout: 30_000,
-    });
-    await viewerClient.post("/api/pay/send", {
-      to_address: DISPATCH_WALLET,
-      amount: video.viewPrice,
-      memo: `Dispatch view: ${video.headline}`
-    });
-  } catch (err: unknown) {
-    const detail = axios.isAxiosError(err) ? JSON.stringify(err.response?.data) : String(err);
-    res.status(402).json({ error: "Payment failed", detail });
-    return;
-  }
-
-  // Payment succeeded — distribute requester share
-  video.viewCount++;
-  video.totalRevenue = (video.totalRevenue || 0) + video.viewPrice;
-
-  if (video.requesterAddress) {
-    const requesterShare = Math.round(video.viewPrice * REQUESTER_SHARE * 1000) / 1000;
-    const mainKey = process.env.LOCUS_API_KEY!;
-    try {
-      const mainClient = axios.create({
-        baseURL: "https://beta-api.paywithlocus.com",
-        headers: { Authorization: `Bearer ${mainKey}`, "Content-Type": "application/json" },
-        timeout: 30_000,
-      });
-      await mainClient.post("/api/pay/send", {
-        to_address: video.requesterAddress,
-        amount: requesterShare,
-        memo: `Dispatch revenue share: ${video.headline}`
-      });
-      console.log(`💸 [Server] Sent $${requesterShare} revenue share to requester ${video.requesterAddress}`);
-    } catch (err) {
-      console.error("Revenue share payment failed:", err);
-      // Don't fail the watch — video was paid for
-    }
-  }
-
-  res.json({
-    videoUrl: `/video/${encodeURIComponent(video.filename)}`,
-    viewCount: video.viewCount,
-    requesterSharePaid: video.requesterAddress ? video.viewPrice * REQUESTER_SHARE : 0
-  });
-});
+// ────────────────────────────────────────────────────────────
+// POST /generate — start a pipeline job
+// ────────────────────────────────────────────────────────────
 
 app.post("/generate", async (req: Request, res: Response) => {
   const topic: string = req.body?.topic || "AI agent economy breakthroughs";
   const jobId = Date.now().toString(36);
   const startedAt = new Date().toISOString();
 
-  console.log(`\n[Server] POST /generate — topic: "${topic}" — jobId: ${jobId}`);
+  console.log(`\n📍 [Server] POST /generate — topic: "${topic}" — jobId: ${jobId}`);
 
-  jobs.set(jobId, { status: "running", topic, startedAt });
+  const job: JobRecord = {
+    status: "running",
+    topic,
+    startedAt,
+    steps: STEP_NAMES.map((name) => ({ name, status: "pending" })),
+    logs: [],
+  };
+  jobs.set(jobId, job);
 
-  runPipeline(topic)
+  // Step callback — updates job steps + logs in real time
+  const onStep: StepCallback = (agent, phase, log) => {
+    const step = job.steps.find((s) => s.name === agent);
+    if (step) {
+      step.status = phase === "start" ? "running" : "done";
+    }
+    const ts = new Date().toLocaleTimeString("en-US", {
+      hour12: false,
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+    job.logs.push(`[${ts}] ${log}`);
+    console.log(`  ↳ [${agent}/${phase}] ${log}`);
+  };
+
+  runPipeline(topic, onStep)
     .then((result) => {
-      jobs.set(jobId, { status: "done", result, topic, startedAt });
+      job.status = "done";
+      job.result = result;
     })
     .catch((err: unknown) => {
       const message = err instanceof Error ? err.message : String(err);
-      console.error(`[Server] Pipeline error for job ${jobId}:`, message);
-      jobs.set(jobId, { status: "error", error: message, topic, startedAt });
+      console.error(`❌ [Server] Pipeline error for job ${jobId}:`, message);
+      job.status = "error";
+      job.error = message;
+      job.logs.push(`❌ Pipeline failed: ${message}`);
     });
 
   res.json({ jobId, status: "running" });
 });
+
+// ────────────────────────────────────────────────────────────
+// GET /api/jobs/:jobId — poll job status (includes step data)
+// ────────────────────────────────────────────────────────────
 
 app.get("/api/jobs/:jobId", (req: Request, res: Response) => {
   const job = jobs.get(req.params.jobId);
@@ -458,39 +796,42 @@ app.get("/api/jobs/:jobId", (req: Request, res: Response) => {
   }
 
   if (job.status === "running") {
-    res.json({ status: "running", topic: job.topic, startedAt: job.startedAt });
+    res.json({
+      status: "running",
+      topic: job.topic,
+      startedAt: job.startedAt,
+      steps: job.steps,
+      logs: job.logs,
+    });
     return;
   }
 
   if (job.status === "error") {
-    res.json({ status: "error", error: job.error, topic: job.topic, startedAt: job.startedAt });
+    res.json({
+      status: "error",
+      error: job.error,
+      topic: job.topic,
+      startedAt: job.startedAt,
+      steps: job.steps,
+      logs: job.logs,
+    });
     return;
   }
 
-  // done — push to history and return full result
+  // done — record to history
   const result = job.result!;
   const filename = path.basename(result.videoPath);
-  const videoId = filename.replace(/\.mp4$/, "");
-  const alreadyRecorded = videoById.has(videoId);
+  const alreadyRecorded = videoHistory.some((v) => v.filename === filename);
   if (!alreadyRecorded) {
-    const record: VideoRecord = {
+    videoHistory.push({
       filename,
       headline: result.headline,
       cost: result.totalCost,
       payments: result.payments,
       createdAt: new Date().toISOString(),
       topic: job.topic,
-      requesterAddress: result.requesterAddress,
-      viewPrice: VIEW_PRICE,
-      viewCount: 0,
-      totalRevenue: 0,
-    };
-    videoHistory.push(record);
-    videoById.set(videoId, record);
-    if (videoHistory.length > 20) {
-      const removed = videoHistory.shift();
-      if (removed) videoById.delete(removed.filename.replace(/\.mp4$/, ""));
-    }
+    });
+    if (videoHistory.length > 10) videoHistory.shift();
   }
 
   const videoUrl = `/video/${encodeURIComponent(filename)}`;
@@ -502,12 +843,17 @@ app.get("/api/jobs/:jobId", (req: Request, res: Response) => {
     headline: result.headline,
     topic: job.topic,
     startedAt: job.startedAt,
+    steps: job.steps,
+    logs: job.logs,
   });
 });
 
+// ────────────────────────────────────────────────────────────
+// GET /video/:filename — serve video file
+// ────────────────────────────────────────────────────────────
+
 app.get("/video/:filename", (req: Request, res: Response) => {
   const filename = req.params.filename;
-  // Sanitise — only allow safe filenames
   if (!/^[\w\-\.]+\.mp4$/.test(filename)) {
     res.status(400).json({ error: "Invalid filename" });
     return;
@@ -517,8 +863,6 @@ app.get("/video/:filename", (req: Request, res: Response) => {
     res.status(404).json({ error: "Video not found" });
     return;
   }
-  res.setHeader("Content-Type", "video/mp4");
-  res.setHeader("Accept-Ranges", "bytes");
   res.sendFile(filePath);
 });
 
@@ -527,7 +871,7 @@ app.get("/video/:filename", (req: Request, res: Response) => {
 // ────────────────────────────────────────────────────────────
 
 app.listen(PORT, () => {
-  console.log(`\nDispatch server running on http://localhost:${PORT}`);
+  console.log(`\n📡 Dispatch server running on http://localhost:${PORT}`);
   console.log(`   DEMO_MODE=${process.env.DEMO_MODE ?? "false"}`);
   console.log(`   LOCUS_API_KEY=${process.env.LOCUS_API_KEY ? "set" : "NOT SET"}\n`);
 });
