@@ -1,24 +1,15 @@
 import * as fs from "fs";
-import * as path from "path";
 import * as https from "https";
 import * as http from "http";
-import { execSync } from "child_process";
+import { spawn } from "child_process";
 import { VisualImage } from "./agents/visual";
 import { VoiceResult } from "./agents/voice";
 import { MusicResult } from "./agents/music";
 
 // ============================================================
-// Editor
-// Assembles final video using FFmpeg Ken Burns effect
-// Steps:
-//   1. Download each image to /tmp
-//   2. For each image, scale to 110% and animated-crop (Ken Burns pan) → clip duration from voice
-//   3. Write narration audio to /tmp
-//   4. Download music track to /tmp
-//   5. Concatenate video clips
-//   6. Mix narration + music (music at 0.3 volume)
-//   7. Return output path
-// NOTE: scale+crop approach instead of zoompan — avoids d-frame buffer OOM at 512MB RAM
+// Editor — assembles final video using FFmpeg Ken Burns effect
+// Uses async spawn (not execSync) to avoid blocking health checks
+// Scale+crop Ken Burns: scale image to 110%, animated crop pan
 // ============================================================
 
 const DEMO_MODE = process.env.DEMO_MODE === "true";
@@ -29,16 +20,27 @@ function downloadFile(url: string, destPath: string): Promise<void> {
     const protocol = url.startsWith("https") ? https : http;
     protocol
       .get(url, (res) => {
-        res.pipe(file);
-        file.on("finish", () => {
+        if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
           file.close();
-          resolve();
-        });
+          fs.unlink(destPath, () => {});
+          return downloadFile(res.headers.location!, destPath).then(resolve).catch(reject);
+        }
+        res.pipe(file);
+        file.on("finish", () => { file.close(); resolve(); });
       })
-      .on("error", (err) => {
-        fs.unlink(destPath, () => {});
-        reject(err);
-      });
+      .on("error", (err) => { fs.unlink(destPath, () => {}); reject(err); });
+  });
+}
+
+// Non-blocking ffmpeg wrapper — spawns as child process, Node stays responsive
+function runFfmpeg(args: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn("ffmpeg", args, { stdio: "inherit" });
+    proc.on("close", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`ffmpeg exited with code ${code}\nArgs: ${args.join(" ")}`));
+    });
+    proc.on("error", reject);
   });
 }
 
@@ -53,101 +55,89 @@ export async function runEditor(
   console.log("🎞️ [Editor] Starting video assembly with Ken Burns effect...");
 
   if (DEMO_MODE) {
-    console.log("🎞️ [Editor] DEMO MODE — creating placeholder output path");
-    // Write a minimal marker file so the server can return something
+    console.log("🎞️ [Editor] DEMO MODE — placeholder");
     fs.writeFileSync(outputPath, "DEMO_VIDEO_PLACEHOLDER");
     return outputPath;
   }
 
-  // Calculate clip duration dynamically from voice audio duration so the
-  // video length matches the narration rather than being hardcoded at 5s/clip.
-  const durationSeconds = voice.durationSeconds ?? 5 * images.length;
-  const clipFrames = Math.round((durationSeconds / images.length) * 25);
-  const lastFrame = clipFrames - 1; // used in pan expressions (0-indexed)
+  // Clip duration driven by voice narration length
+  const clipFrames = Math.round((voice.durationSeconds / images.length) * 25);
+  const clipDurSecs = voice.durationSeconds / images.length;
+  console.log(`🎞️ [Editor] Voice duration: ${voice.durationSeconds.toFixed(2)}s → ${clipFrames} frames/clip (${images.length} clips)`);
 
-  console.log(
-    `🎞️ [Editor] Voice duration: ${durationSeconds.toFixed(2)}s → ${clipFrames} frames/clip (${images.length} clips)`
-  );
-
-  // 1. Download images and create Ken Burns clips
+  // 1. Build Ken Burns clips (scale to 110% + animated crop — no zoompan, no frame buffering)
   const clipPaths: string[] = [];
+  const ex = 192; // 2112 - 1920
+  const ey = 108; // 1188 - 1080
+  const totalFrameIndex = clipFrames - 1;
+  const panDirections = [
+    `x='${ex}*n/${totalFrameIndex}':y='${ey}*n/${totalFrameIndex}'`,
+    `x='${ex}*(1-n/${totalFrameIndex})':y='${ey}*(1-n/${totalFrameIndex})'`,
+    `x='${ex}*n/${totalFrameIndex}':y='${ey}*(1-n/${totalFrameIndex})'`,
+    `x='${ex}*(1-n/${totalFrameIndex})':y='${ey}*n/${totalFrameIndex}'`,
+  ];
+
   for (let i = 0; i < images.length; i++) {
     const imgPath = `/tmp/dispatch-img-${timestamp}-${i}.jpg`;
     const clipPath = `/tmp/dispatch-clip-${timestamp}-${i}.mp4`;
     console.log(`🎞️ [Editor] Downloading image ${i}...`);
     await downloadFile(images[i].url, imgPath);
 
-    console.log(`🎞️ [Editor] Creating Ken Burns clip ${i}...`);
-    // Ken Burns effect via scale-up + animated crop (no zoompan — avoids d-frame buffer OOM).
-    // Scale image to 110% (2112x1188), then crop 1920x1080 window that slowly pans across.
-    // Alternating pan directions give visual variety across clips.
-    const ex = 192; // 2112 - 1920
-    const ey = 108; // 1188 - 1080
-    const panDirections = [
-      `x='${ex}*n/${lastFrame}':y='${ey}*n/${lastFrame}'`,              // TL → BR
-      `x='${ex}*(1-n/${lastFrame})':y='${ey}*(1-n/${lastFrame})'`,      // BR → TL
-      `x='${ex}*n/${lastFrame}':y='${ey}*(1-n/${lastFrame})'`,           // BL → TR
-      `x='${ex}*(1-n/${lastFrame})':y='${ey}*n/${lastFrame}'`,           // TR → BL
-    ];
+    console.log(`🎞️ [Editor] Encoding clip ${i} (${clipDurSecs.toFixed(1)}s, ${clipFrames} frames)...`);
     const pan = panDirections[i % 4];
-    // Fix: append format=yuv420p to avoid yuvj420p (full-range JPEG color space) black screen in browsers
     const vf = `scale=2112:1188:force_original_aspect_ratio=increase,crop=2112:1188,crop=1920:1080:${pan},format=yuv420p`;
-    const ffmpegCmd = [
-      "ffmpeg", "-y",
-      "-loop", "1",
-      "-i", `"${imgPath}"`,
-      "-vf", `"${vf}"`,
-      "-frames:v", `${clipFrames}`,
-      "-colorspace", "1",
-      "-color_primaries", "1",
-      "-color_trc", "1",
+    await runFfmpeg([
+      "-y", "-loop", "1", "-i", imgPath,
+      "-vf", vf,
+      "-frames:v", String(clipFrames),
       "-c:v", "libx264",
       "-preset", "ultrafast",
+      "-colorspace", "1", "-color_primaries", "1", "-color_trc", "1",
       "-pix_fmt", "yuv420p",
-      `"${clipPath}"`
-    ].join(" ");
-    execSync(ffmpegCmd, { stdio: "inherit" });
+      clipPath,
+    ]);
     clipPaths.push(clipPath);
-
-    // Cleanup image
     try { fs.unlinkSync(imgPath); } catch { /* ignore */ }
+    console.log(`🎞️ [Editor] Clip ${i} done ✅`);
   }
 
-  // 2. Write narration audio
+  // 2. Write voice audio
   const voicePath = `/tmp/dispatch-voice-${timestamp}.mp3`;
   fs.writeFileSync(voicePath, voice.audioBuffer);
 
   // 3. Download music
   const musicPath = `/tmp/dispatch-music-${timestamp}.mp3`;
-  console.log("🎞️ [Editor] Downloading music track...");
+  console.log("🎞️ [Editor] Downloading music...");
   await downloadFile(music.audioUrl, musicPath);
 
-  // 4. Create concat file for ffmpeg
+  // 4. Concatenate clips
   const concatListPath = `/tmp/dispatch-list-${timestamp}.txt`;
-  const concatContent = clipPaths.map((p) => `file '${p}'`).join("\n");
-  fs.writeFileSync(concatListPath, concatContent);
-
+  fs.writeFileSync(concatListPath, clipPaths.map((p) => `file '${p}'`).join("\n"));
   const concatenatedPath = `/tmp/dispatch-concat-${timestamp}.mp4`;
+  console.log("🎞️ [Editor] Concatenating clips...");
+  await runFfmpeg([
+    "-y", "-f", "concat", "-safe", "0", "-i", concatListPath,
+    "-c", "copy", concatenatedPath,
+  ]);
 
-  // Concatenate clips
-  console.log("🎞️ [Editor] Concatenating video clips...");
-  execSync(
-    `ffmpeg -y -f concat -safe 0 -i "${concatListPath}" -c copy "${concatenatedPath}"`,
-    { stdio: "inherit" }
-  );
-
-  // 5. Mix narration + music, mux with video
+  // 5. Mix voice + music → final video
   console.log("🎞️ [Editor] Mixing audio and muxing final video...");
-  execSync(
-    `ffmpeg -y -i "${concatenatedPath}" -i "${voicePath}" -i "${musicPath}" ` +
-    `-filter_complex "[2:a]volume=0.3[music];[1:a][music]amix=inputs=2:duration=first[audio]" ` +
-    `-map 0:v -map "[audio]" -c:v copy -c:a aac -shortest "${outputPath}"`,
-    { stdio: "inherit" }
-  );
+  await runFfmpeg([
+    "-y",
+    "-i", concatenatedPath,
+    "-i", voicePath,
+    "-i", musicPath,
+    "-filter_complex", "[2:a]volume=0.3[music];[1:a][music]amix=inputs=2:duration=first[audio]",
+    "-map", "0:v",
+    "-map", "[audio]",
+    "-c:v", "copy",
+    "-c:a", "aac",
+    "-shortest",
+    outputPath,
+  ]);
 
-  // Cleanup temp files
-  const temps = [...clipPaths, voicePath, musicPath, concatListPath, concatenatedPath];
-  for (const t of temps) {
+  // Cleanup
+  for (const t of [...clipPaths, voicePath, musicPath, concatListPath, concatenatedPath]) {
     try { fs.unlinkSync(t); } catch { /* ignore */ }
   }
 
