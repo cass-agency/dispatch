@@ -38,6 +38,8 @@ export type StepCallback = (
   log: string
 ) => void;
 
+export type TokenCallback = (agent: string, token: string) => void;
+
 export interface Payment {
   agent: string;
   address: string;
@@ -67,7 +69,8 @@ async function payAgent(agentName: string, memo: string): Promise<Payment> {
 
 export async function runPipeline(
   topic = "AI agent economy breakthroughs",
-  onStep?: StepCallback
+  onStep?: StepCallback,
+  onToken?: TokenCallback
 ): Promise<PipelineResult> {
   console.log("\n🚀 [Pipeline] Starting Dispatch news video pipeline...");
   console.log(`📰 [Pipeline] Topic: ${topic}\n`);
@@ -77,7 +80,7 @@ export async function runPipeline(
 
   // ── Step 1: Research ──────────────────────────────────────
   onStep?.("researcher", "start", `🔍 Searching live news about "${topic}"...`);
-  const research = await runResearcher(topic);
+  const research = await runResearcher(topic, (t) => onToken?.("researcher", t));
   const p1 = await payAgent("researcher", "Tavily news search");
   payments.push(p1);
   totalCost += p1.amount;
@@ -85,7 +88,7 @@ export async function runPipeline(
 
   // ── Step 2: Scriptwriting ─────────────────────────────────
   onStep?.("scriptwriter", "start", "✍️  Writing 4-segment broadcast script with Claude...");
-  const script = await runScriptwriter(research.summary);
+  const script = await runScriptwriter(research.brief, (t) => onToken?.("scriptwriter", t));
   const p2 = await payAgent("scriptwriter", "Claude Haiku script generation");
   payments.push(p2);
   totalCost += p2.amount;
@@ -93,7 +96,7 @@ export async function runPipeline(
 
   // ── Step 3: Visual generation ─────────────────────────────
   onStep?.("visual", "start", `🎨 Generating ${script.segments.length} cinematic images with fal.ai Flux...`);
-  const visuals = await runVisual(script.segments);
+  const visuals = await runVisual(script.segments, script, research.brief, (t) => onToken?.("visual", t));
   const p3 = await payAgent("visual", "fal.ai flux image generation");
   payments.push(p3);
   totalCost += p3.amount;
@@ -101,7 +104,7 @@ export async function runPipeline(
 
   // ── Step 4: Voice synthesis ───────────────────────────────
   onStep?.("voice", "start", "🎙️  Synthesizing broadcast narration with Deepgram...");
-  const voice = await runVoice(script.segments);
+  const voice = await runVoice(script.segments, research.brief, (t) => onToken?.("voice", t));
   const p4 = await payAgent("voice", "Deepgram TTS narration");
   payments.push(p4);
   totalCost += p4.amount;
@@ -109,7 +112,7 @@ export async function runPipeline(
 
   // ── Step 5: Music generation ──────────────────────────────
   onStep?.("music", "start", "🎵 Composing original background score with Suno...");
-  const music = await runMusic();
+  const music = await runMusic(script, research.brief, (t) => onToken?.("music", t));
   const p5 = await payAgent("music", "Suno background music");
   payments.push(p5);
   totalCost += p5.amount;
