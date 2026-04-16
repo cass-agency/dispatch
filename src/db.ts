@@ -97,13 +97,44 @@ CREATE TABLE IF NOT EXISTS watch_tokens (
 );
 `;
 
+// Idempotent migrations — run on every boot so tables made by an older schema
+// gain any columns we've since added. (CREATE TABLE IF NOT EXISTS doesn't ADD
+// columns to pre-existing tables.)
+const MIGRATIONS_SQL = `
+ALTER TABLE videos          ADD COLUMN IF NOT EXISTS commission_session_id TEXT;
+ALTER TABLE videos          ADD COLUMN IF NOT EXISTS requester_address     TEXT;
+ALTER TABLE videos          ADD COLUMN IF NOT EXISTS content_length        INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE videos          ADD COLUMN IF NOT EXISTS data                  BYTEA;
+ALTER TABLE videos          ADD COLUMN IF NOT EXISTS payments              JSONB NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE videos          ADD COLUMN IF NOT EXISTS created_at            TIMESTAMPTZ NOT NULL DEFAULT now();
+
+ALTER TABLE commissions     ADD COLUMN IF NOT EXISTS paid_at               TIMESTAMPTZ;
+ALTER TABLE commissions     ADD COLUMN IF NOT EXISTS payer_address         TEXT;
+ALTER TABLE commissions     ADD COLUMN IF NOT EXISTS payment_tx_hash       TEXT;
+ALTER TABLE commissions     ADD COLUMN IF NOT EXISTS job_id                TEXT;
+ALTER TABLE commissions     ADD COLUMN IF NOT EXISTS video_filename        TEXT;
+ALTER TABLE commissions     ADD COLUMN IF NOT EXISTS watch_token           TEXT;
+ALTER TABLE commissions     ADD COLUMN IF NOT EXISTS revenue_sent          BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE commissions     ADD COLUMN IF NOT EXISTS retry_count           INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE commissions     ADD COLUMN IF NOT EXISTS headline              TEXT;
+ALTER TABLE commissions     ADD COLUMN IF NOT EXISTS total_cost            NUMERIC;
+ALTER TABLE commissions     ADD COLUMN IF NOT EXISTS updated_at            TIMESTAMPTZ NOT NULL DEFAULT now();
+
+ALTER TABLE watch_sessions  ADD COLUMN IF NOT EXISTS paid_at               TIMESTAMPTZ;
+ALTER TABLE watch_sessions  ADD COLUMN IF NOT EXISTS watch_token           TEXT;
+ALTER TABLE watch_sessions  ADD COLUMN IF NOT EXISTS revenue_sent          BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE watch_sessions  ADD COLUMN IF NOT EXISTS updated_at            TIMESTAMPTZ NOT NULL DEFAULT now();
+`;
+
 export async function initSchema(): Promise<void> {
   if (!hasDb()) {
     console.warn("[db] DATABASE_URL not set — persistence disabled (in-memory only)");
     return;
   }
-  await getPool().query(SCHEMA_SQL);
-  console.log("[db] schema ready");
+  const pool = getPool();
+  await pool.query(SCHEMA_SQL);
+  await pool.query(MIGRATIONS_SQL);
+  console.log("[db] schema ready (migrations applied)");
 }
 
 // ──────────────────────────────────────────────────────────────

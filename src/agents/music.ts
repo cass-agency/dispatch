@@ -89,11 +89,16 @@ Return ONLY valid JSON:
     }
     console.log(`🎵 [Music] Task ${taskId} — polling...`);
 
+    let lastStatus = "";
     for (let i = 0; i < 36; i++) {
       await new Promise((r) => setTimeout(r, 5000));
       const poll = (await callWrapped("suno", "get-music-status", { taskId }, AGENT_KEY())) as { data?: SunoStatus };
       const inner = poll?.data;
-      console.log(`🎵 [Music] ${inner?.status}`);
+      const status = inner?.status ?? "";
+      if (status !== lastStatus) {
+        console.log(`🎵 [Music] ${status}`);
+        lastStatus = status;
+      }
 
       if (inner?.status === "SUCCESS") {
         const audioUrl = inner.response?.sunoData?.[0]?.audioUrl;

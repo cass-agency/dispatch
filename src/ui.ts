@@ -1974,6 +1974,7 @@ ${videoHistory.length > 0 ? `
   let sseConn              = null;
   let startTime            = null;
   let timerInterval        = null;
+  let mountedPipelineJobId = null; // prevents re-mount / auto-scroll loop on each poll
 
   const AGENT_SVG_MAP = {
     researcher:   '<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m20 20-4.8-4.8"/></svg>',
@@ -2053,6 +2054,7 @@ ${videoHistory.length > 0 ? `
         return;
       }
       if (data.status === 'generating') {
+        mountedPipelineJobId = null; // force a clean mount on page load
         showPipelineSection(data.topic, data.jobId);
         startCommissionPoll(sessionId);
         return;
@@ -2227,6 +2229,7 @@ ${videoHistory.length > 0 ? `
       clearInterval(commissionPollTimer);
       if (sseConn) { sseConn.close(); sseConn = null; }
       clearInterval(timerInterval);
+      mountedPipelineJobId = null;
       document.getElementById('pipeline-section').classList.add('hidden');
       showCommissionerVideo(data);
     } else if (data.status === 'refund_needed') {
@@ -2344,6 +2347,15 @@ ${videoHistory.length > 0 ? `
 
   // ═══ Pipeline ═══
   function showPipelineSection(topic, jobId) {
+    // Idempotent: if we already mounted this job, just make sure the section
+    // is visible and don't wipe the council/terminal or re-scroll.
+    if (mountedPipelineJobId === jobId) {
+      const s = document.getElementById('pipeline-section');
+      if (s) s.classList.remove('hidden');
+      return;
+    }
+    mountedPipelineJobId = jobId;
+
     const section = document.getElementById('pipeline-section');
     section.classList.remove('hidden');
     requestAnimationFrame(() => section.classList.add('in'));
@@ -2363,7 +2375,8 @@ ${videoHistory.length > 0 ? `
     updateTimer();
 
     if (jobId) startStreaming(jobId);
-    section.scrollIntoView({ behavior:'smooth', block:'start' });
+    // Smooth scroll only on first mount
+    section.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
   function startStreaming(jobId) {

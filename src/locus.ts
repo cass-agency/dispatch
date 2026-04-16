@@ -56,6 +56,12 @@ export async function callWrapped(
   }
 }
 
+/**
+ * Call a wrapped LLM and return its full response text.
+ * Invokes `onToken` once with the complete text so existing UI-streaming
+ * plumbing keeps working. Locus's anthropic wrapper no longer returns SSE,
+ * so we skip the failing streaming probe entirely.
+ */
 export async function callWrappedStream(
   provider: string,
   endpoint: string,
@@ -63,64 +69,11 @@ export async function callWrappedStream(
   onToken: (t: string) => void,
   apiKey?: string
 ): Promise<string> {
-  const key = resolveKey(apiKey);
-  const path = `/api/wrapped/${provider}/${endpoint}`;
-  const url = `${LOCUS_BASE}${path}`;
-
-  try {
-    const response = await fetch(url, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${key}`,
-        "Content-Type": "application/json",
-        Accept: "text/event-stream",
-      },
-      body: JSON.stringify({ ...body, stream: true }),
-    });
-
-    const contentType = response.headers.get("content-type") ?? "";
-    if (!contentType.includes("text/event-stream")) {
-      throw new Error(`Non-SSE response: ${contentType}`);
-    }
-
-    const reader = response.body?.getReader();
-    if (!reader) throw new Error("No response body reader");
-
-    const decoder = new TextDecoder();
-    let accumulated = "";
-    let buffer = "";
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
-      for (const line of lines) {
-        if (!line.startsWith("data: ")) continue;
-        const dataStr = line.slice(6).trim();
-        if (dataStr === "[DONE]") continue;
-        try {
-          const event = JSON.parse(dataStr) as {
-            type?: string;
-            delta?: { type?: string; text?: string };
-          };
-          if (event.type === "content_block_delta" && event.delta?.text) {
-            onToken(event.delta.text);
-            accumulated += event.delta.text;
-          }
-        } catch {}
-      }
-    }
-    return accumulated;
-  } catch (err) {
-    console.warn(`[locus] callWrappedStream falling back to callWrapped: ${(err as Error).message}`);
-    const result = await callWrapped(provider, endpoint, body, apiKey);
-    const raw = result as { content?: Array<{ text?: string }> };
-    const text = raw.content?.[0]?.text ?? String(result);
-    onToken(text);
-    return text;
-  }
+  const result = await callWrapped(provider, endpoint, body, apiKey);
+  const raw = result as { content?: Array<{ text?: string }> };
+  const text = raw.content?.[0]?.text ?? String(result);
+  onToken(text);
+  return text;
 }
 
 // ──────────────────────────────────────────────────────────────
