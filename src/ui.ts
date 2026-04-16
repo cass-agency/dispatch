@@ -154,7 +154,7 @@ export function renderHome({ videoHistory, agentWallets }: RenderOpts): string {
   const howStepsHtml = howSteps.map((s) => `
     <div class="how-step">
       <div class="how-num">${s.n}</div>
-      <div class="how-title">${s.title}</div>
+      <div class="how-title-sm">${s.title}</div>
       <p class="how-body">${s.body}</p>
     </div>`).join("");
 
