@@ -519,11 +519,47 @@ app.get("/commission/:sessionId", (req: Request, res: Response) => {
     steps: job?.steps,
     logs: job?.logs?.slice(-20),
     videoFilename: commission.videoFilename,
-    watchToken: commission.status === "done" ? commission.watchToken : undefined,
+    canClaimWatch: commission.status === "done" && !!commission.watchToken,
     headline: commission.headline,
     totalCost: commission.totalCost,
     revenueSent: commission.revenueSent,
     retryCount: commission.retryCount,
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// POST /videos/:filename/watch — create a pay-to-watch session
+// ─────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────
+// POST /commission/:sessionId/claim-watch — one-time free watch for commissioner
+// ─────────────────────────────────────────────────────────────
+
+app.post("/commission/:sessionId/claim-watch", (req: Request, res: Response) => {
+  const commission = commissions.get(req.params.sessionId);
+  if (!commission) {
+    res.status(404).json({ error: "Commission not found" });
+    return;
+  }
+  if (commission.status !== "done") {
+    res.status(400).json({ error: "Commission not done" });
+    return;
+  }
+  if (!commission.watchToken) {
+    res.status(409).json({ error: "Watch already claimed" });
+    return;
+  }
+
+  // Issue the token once, then consume it so it can't be claimed again
+  const token = commission.watchToken;
+  commission.watchToken = undefined;
+  db.upsertCommission({ ...commission }).catch(() => {});
+
+  res.json({
+    watchToken: token,
+    videoFilename: commission.videoFilename,
+    headline: commission.headline,
+    totalCost: commission.totalCost,
   });
 });
 

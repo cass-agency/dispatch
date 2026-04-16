@@ -2088,6 +2088,17 @@ ${videoHistory.length > 0 ? `
       const data = await resp.json();
       currentCommissionId = sessionId;
       if (data.status === 'done') {
+        // Try to claim the one-time free watch (only works if not already claimed)
+        if (data.canClaimWatch) {
+          try {
+            const claimResp = await fetch('/commission/' + sessionId + '/claim-watch', { method: 'POST' });
+            if (claimResp.ok) {
+              const claimed = await claimResp.json();
+              data.watchToken = claimed.watchToken;
+            }
+          } catch (e) {}
+        }
+        // If already claimed (409) or no token, show the watch gate (pay-to-view)
         showCommissionerVideo(data);
         return;
       }
@@ -2275,6 +2286,17 @@ ${videoHistory.length > 0 ? `
       clearInterval(timerInterval);
       mountedPipelineJobId = null;
       document.getElementById('pipeline-section').classList.add('hidden');
+
+      // Claim the one-time free watch token (consumed on first call)
+      if (data.canClaimWatch) {
+        try {
+          const claimResp = await fetch('/commission/' + data.sessionId + '/claim-watch', { method: 'POST' });
+          if (claimResp.ok) {
+            const claimed = await claimResp.json();
+            data.watchToken = claimed.watchToken;
+          }
+        } catch (e) {}
+      }
       showCommissionerVideo(data);
     } else if (data.status === 'refund_needed') {
       clearInterval(commissionPollTimer);
