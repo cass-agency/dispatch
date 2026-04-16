@@ -2900,7 +2900,24 @@ ${videoHistory.length > 0 ? `
     section.classList.remove('hidden');
     requestAnimationFrame(() => section.classList.add('in'));
 
-    // Show preview player first instead of immediately gating
+    // Probe whether a preview exists (videos created before the preview feature won't have one)
+    const previewUrl = '/video/' + encodeURIComponent(filename) + '/preview';
+    let hasPreview = false;
+    try {
+      const probe = await fetch(previewUrl, { method: 'HEAD' });
+      hasPreview = probe.ok;
+    } catch (e) {}
+
+    if (!hasPreview) {
+      // No preview available — go straight to the pay gate
+      document.getElementById('watch-gate').classList.remove('hidden');
+      document.getElementById('video-wrapper').classList.add('hidden');
+      launchWatchCheckout(filename, commissionSessionId);
+      section.scrollIntoView({ behavior:'smooth', block:'start' });
+      return;
+    }
+
+    // Show preview player first
     document.getElementById('watch-gate').classList.add('hidden');
     document.getElementById('video-wrapper').classList.remove('hidden');
     document.getElementById('video-headline-text').textContent = '';
@@ -2908,7 +2925,7 @@ ${videoHistory.length > 0 ? `
     document.getElementById('payment-breakdown').innerHTML = '';
 
     const vid = document.getElementById('main-video');
-    vid.src = '/video/' + encodeURIComponent(filename) + '/preview';
+    vid.src = previewUrl;
     vid.autoplay = true;
     vid.muted = true;
     vid.playsInline = true;
@@ -2929,7 +2946,6 @@ ${videoHistory.length > 0 ? `
     const overlay = document.getElementById('preview-overlay');
     if (overlay) { overlay.classList.remove('visible'); overlay.textContent = ''; }
 
-    // Timeupdate: show countdown when <= 3s remain
     function onTimeUpdate() {
       const remaining = vid.duration - vid.currentTime;
       if (remaining <= 3 && remaining > 0 && overlay) {
@@ -2941,15 +2957,23 @@ ${videoHistory.length > 0 ? `
       vid.removeEventListener('timeupdate', onTimeUpdate);
       vid.removeEventListener('ended', onEnded);
       if (overlay) overlay.classList.remove('visible');
-      // Show the watch gate for payment
+      document.getElementById('video-wrapper').classList.add('hidden');
+      document.getElementById('watch-gate').classList.remove('hidden');
+      launchWatchCheckout(filename, commissionSessionId);
+    }
+    function onError() {
+      vid.removeEventListener('error', onError);
+      // Preview failed to load — fall back to watch gate
       document.getElementById('video-wrapper').classList.add('hidden');
       document.getElementById('watch-gate').classList.remove('hidden');
       launchWatchCheckout(filename, commissionSessionId);
     }
     vid.removeEventListener('timeupdate', onTimeUpdate);
     vid.removeEventListener('ended', onEnded);
+    vid.removeEventListener('error', onError);
     vid.addEventListener('timeupdate', onTimeUpdate);
     vid.addEventListener('ended', onEnded);
+    vid.addEventListener('error', onError);
 
     vid.play().catch(function() {});
     section.scrollIntoView({ behavior:'smooth', block:'start' });
