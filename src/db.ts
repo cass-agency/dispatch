@@ -99,15 +99,26 @@ CREATE TABLE IF NOT EXISTS watch_tokens (
 
 // Idempotent migrations — run on every boot so tables made by an older schema
 // gain any columns we've since added. (CREATE TABLE IF NOT EXISTS doesn't ADD
-// columns to pre-existing tables.)
+// columns to pre-existing tables.) Exhaustive: covers every column we SELECT
+// or INSERT anywhere, with sane defaults so pre-existing rows stay valid.
 const MIGRATIONS_SQL = `
+-- videos
+ALTER TABLE videos          ADD COLUMN IF NOT EXISTS headline              TEXT NOT NULL DEFAULT '';
+ALTER TABLE videos          ADD COLUMN IF NOT EXISTS topic                 TEXT NOT NULL DEFAULT '';
+ALTER TABLE videos          ADD COLUMN IF NOT EXISTS cost                  NUMERIC NOT NULL DEFAULT 0;
+ALTER TABLE videos          ADD COLUMN IF NOT EXISTS payments              JSONB NOT NULL DEFAULT '[]'::jsonb;
 ALTER TABLE videos          ADD COLUMN IF NOT EXISTS commission_session_id TEXT;
 ALTER TABLE videos          ADD COLUMN IF NOT EXISTS requester_address     TEXT;
 ALTER TABLE videos          ADD COLUMN IF NOT EXISTS content_length        INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE videos          ADD COLUMN IF NOT EXISTS data                  BYTEA;
-ALTER TABLE videos          ADD COLUMN IF NOT EXISTS payments              JSONB NOT NULL DEFAULT '[]'::jsonb;
 ALTER TABLE videos          ADD COLUMN IF NOT EXISTS created_at            TIMESTAMPTZ NOT NULL DEFAULT now();
 
+-- commissions
+ALTER TABLE commissions     ADD COLUMN IF NOT EXISTS locus_session_id      TEXT NOT NULL DEFAULT '';
+ALTER TABLE commissions     ADD COLUMN IF NOT EXISTS topic                 TEXT NOT NULL DEFAULT '';
+ALTER TABLE commissions     ADD COLUMN IF NOT EXISTS requester_address     TEXT NOT NULL DEFAULT '';
+ALTER TABLE commissions     ADD COLUMN IF NOT EXISTS checkout_url          TEXT NOT NULL DEFAULT '';
+ALTER TABLE commissions     ADD COLUMN IF NOT EXISTS status                TEXT NOT NULL DEFAULT 'pending_payment';
 ALTER TABLE commissions     ADD COLUMN IF NOT EXISTS paid_at               TIMESTAMPTZ;
 ALTER TABLE commissions     ADD COLUMN IF NOT EXISTS payer_address         TEXT;
 ALTER TABLE commissions     ADD COLUMN IF NOT EXISTS payment_tx_hash       TEXT;
@@ -118,12 +129,24 @@ ALTER TABLE commissions     ADD COLUMN IF NOT EXISTS revenue_sent          BOOLE
 ALTER TABLE commissions     ADD COLUMN IF NOT EXISTS retry_count           INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE commissions     ADD COLUMN IF NOT EXISTS headline              TEXT;
 ALTER TABLE commissions     ADD COLUMN IF NOT EXISTS total_cost            NUMERIC;
+ALTER TABLE commissions     ADD COLUMN IF NOT EXISTS created_at            TIMESTAMPTZ NOT NULL DEFAULT now();
 ALTER TABLE commissions     ADD COLUMN IF NOT EXISTS updated_at            TIMESTAMPTZ NOT NULL DEFAULT now();
+CREATE INDEX IF NOT EXISTS commissions_locus_idx ON commissions (locus_session_id);
 
+-- watch_sessions
+ALTER TABLE watch_sessions  ADD COLUMN IF NOT EXISTS video_filename        TEXT NOT NULL DEFAULT '';
+ALTER TABLE watch_sessions  ADD COLUMN IF NOT EXISTS commission_session_id TEXT;
+ALTER TABLE watch_sessions  ADD COLUMN IF NOT EXISTS checkout_url          TEXT NOT NULL DEFAULT '';
+ALTER TABLE watch_sessions  ADD COLUMN IF NOT EXISTS status                TEXT NOT NULL DEFAULT 'pending_payment';
 ALTER TABLE watch_sessions  ADD COLUMN IF NOT EXISTS paid_at               TIMESTAMPTZ;
 ALTER TABLE watch_sessions  ADD COLUMN IF NOT EXISTS watch_token           TEXT;
 ALTER TABLE watch_sessions  ADD COLUMN IF NOT EXISTS revenue_sent          BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE watch_sessions  ADD COLUMN IF NOT EXISTS created_at            TIMESTAMPTZ NOT NULL DEFAULT now();
 ALTER TABLE watch_sessions  ADD COLUMN IF NOT EXISTS updated_at            TIMESTAMPTZ NOT NULL DEFAULT now();
+
+-- watch_tokens
+ALTER TABLE watch_tokens    ADD COLUMN IF NOT EXISTS video_filename        TEXT NOT NULL DEFAULT '';
+ALTER TABLE watch_tokens    ADD COLUMN IF NOT EXISTS created_at            TIMESTAMPTZ NOT NULL DEFAULT now();
 `;
 
 export async function initSchema(): Promise<void> {
