@@ -2493,7 +2493,7 @@ ${videoHistory.length > 0 ? `
     }, 3000);
   }
 
-  function handleCommissionStatus(data) {
+  async function handleCommissionStatus(data) {
     if (data.status === 'pending_payment') {
       document.getElementById('pending-status-msg').innerHTML = '<span style="display:inline-flex;align-items:center;gap:8px"><svg class="animate-spin" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.4"><circle cx="12" cy="12" r="9" stroke-opacity="0.3"/><path d="M12 3a9 9 0 0 1 9 9"/></svg>Checking Locus checkout…</span>';
     } else if (data.status === 'generating') {
