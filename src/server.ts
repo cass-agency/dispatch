@@ -11,6 +11,7 @@ import {
   TokenCallback,
 } from "./pipeline";
 import { ChatCallback, ChatMessage } from "./council";
+import { enqueuePayout, startReconciler } from "./payouts";
 import {
   createCheckoutSession,
   getCheckoutSession,
@@ -32,9 +33,11 @@ const PORT = process.env.PORT ?? 8080;
 // Constants
 // ─────────────────────────────────────────────────────────────
 
-const COMMISSION_FEE = "0.50";
+const COMMISSION_FEE_PUBLIC   = "0.50";
+const COMMISSION_FEE_EXCLUSIVE = "2.00";
 const WATCH_PRICE    = "0.05";
-const REQUESTER_SHARE_PCT = 0.40;  // 40% of each view → commissioner
+const REQUESTER_SHARE_PCT = 0.40;
+const PAYOUT_RECONCILE_MS = 30_000;
 
 const AGENT_WALLETS: Record<string, { emoji: string; label: string; address: string }> = {
   researcher:   { emoji: "🔍", label: "Researcher",   address: "0x99ea943041e186b103a160e843e3e8ef47881c5c" },
@@ -70,6 +73,9 @@ interface Commission {
   retryCount: number;
   headline?: string;
   totalCost?: number;
+  mode: "public" | "exclusive";
+  fee: string;
+  downloadToken?: string;
 }
 
 interface WatchSession {
@@ -246,34 +252,42 @@ function launchPipeline(commission: Commission) {
       commission.headline = result.headline;
       commission.totalCost = result.totalCost;
 
-      // Give commissioner a free watch token
-      const token = makeToken();
-      commission.watchToken = token;
-      watchTokens.set(token, filename);
-
-      // Record to history
-      const alreadyRecorded = videoHistory.some((v) => v.filename === filename);
       const createdAt = new Date().toISOString();
-      if (!alreadyRecorded) {
-        videoHistory.push({
-          filename,
-          headline: result.headline,
-          cost: result.totalCost,
-          payments: result.payments,
-          createdAt,
-          topic: commission.topic,
-          commissionSessionId: commission.sessionId,
-          requesterAddress: commission.requesterAddress,
-        });
-        if (videoHistory.length > 50) videoHistory.shift();
+      const isExclusive = commission.mode === "exclusive";
+
+      if (isExclusive) {
+        // Exclusive: commissioner gets download token, video NOT in public archive
+        const dlToken = makeToken();
+        commission.downloadToken = dlToken;
+      } else {
+        // Public: commissioner gets free watch token, video goes into archive
+        const token = makeToken();
+        commission.watchToken = token;
+        watchTokens.set(token, filename);
+
+        const alreadyRecorded = videoHistory.some((v) => v.filename === filename);
+        if (!alreadyRecorded) {
+          videoHistory.push({
+            filename,
+            headline: result.headline,
+            cost: result.totalCost,
+            payments: result.payments,
+            createdAt,
+            topic: commission.topic,
+            commissionSessionId: commission.sessionId,
+            requesterAddress: commission.requesterAddress,
+          });
+          if (videoHistory.length > 50) videoHistory.shift();
+        }
       }
 
       commission.status = "done";
 
-      // ── Persist to Postgres (video bytes + commission state + token) ──
+      // ── Persist to Postgres ──
       try {
         if (db.hasDb() && fs.existsSync(result.videoPath)) {
           const bytes = fs.readFileSync(result.videoPath);
+          const previewBytes = fs.existsSync(result.previewPath) ? fs.readFileSync(result.previewPath) : undefined;
           await db.insertVideo(
             {
               filename,
@@ -285,12 +299,16 @@ function launchPipeline(commission: Commission) {
               requesterAddress: commission.requesterAddress,
               contentLength: bytes.length,
               createdAt,
+              isExclusive,
             },
-            bytes
+            bytes,
+            previewBytes
           );
-          await db.insertWatchToken(token, filename);
+          if (!isExclusive && commission.watchToken) {
+            await db.insertWatchToken(commission.watchToken, filename);
+          }
           await db.upsertCommission({ ...commission });
-          console.log(`💾 [DB] Video ${filename} persisted (${(bytes.length / 1024 / 1024).toFixed(2)} MB)`);
+          console.log(`💾 [DB] Video ${filename} persisted (${(bytes.length / 1024 / 1024).toFixed(2)} MB, exclusive=${isExclusive})`);
         }
       } catch (e) {
         console.error("[DB] persist failed:", (e as Error).message);
@@ -319,7 +337,7 @@ function launchPipeline(commission: Commission) {
       } else {
         commission.status = "refund_needed";
         console.error(
-          `💸 [Refund needed] Commission ${commission.sessionId} — refund $${COMMISSION_FEE} to ${commission.payerAddress}`
+          `💸 [Refund needed] Commission ${commission.sessionId} — refund $${commission.fee} to ${commission.payerAddress}`
         );
       }
       db.upsertCommission({ ...commission }).catch(() => {});
@@ -371,7 +389,7 @@ setInterval(async () => {
         db.insertWatchToken(token, ws.videoFilename).catch(() => {});
         db.upsertWatchSession({ ...ws }).catch(() => {});
 
-        // Revenue share → commissioner
+        // Revenue share → commissioner (via outbox for reliability)
         const videoRecord = videoHistory.find(
           (v) => v.filename === ws.videoFilename
         );
@@ -379,21 +397,20 @@ setInterval(async () => {
           const shareAmount =
             Math.round(
               parseFloat(WATCH_PRICE) * REQUESTER_SHARE_PCT * 100
-            ) / 100; // $0.02
-          pay(
-            videoRecord.requesterAddress,
-            shareAmount,
-            `Dispatch view revenue: ${videoRecord.headline ?? ws.videoFilename}`
-          )
-            .then(() => {
-              ws.revenueSent = true;
+            ) / 100;
+          enqueuePayout({
+            toAddress: videoRecord.requesterAddress,
+            amount: shareAmount,
+            memo: `Dispatch view revenue: ${videoRecord.headline ?? ws.videoFilename}`,
+            reason: "revenue_share",
+            relatedId: ws.sessionId,
+          })
+            .then(({ sent }) => {
+              ws.revenueSent = sent;
               db.upsertWatchSession({ ...ws }).catch(() => {});
-              console.log(
-                `💸 [Revenue] Sent $${shareAmount} to ${videoRecord.requesterAddress}`
-              );
             })
             .catch((e) =>
-              console.error("[Revenue share] pay/send failed:", e)
+              console.error("[Revenue share] enqueue failed:", e)
             );
         }
       } else if (
@@ -434,9 +451,10 @@ app.get("/", (_req: Request, res: Response) => {
 // ─────────────────────────────────────────────────────────────
 
 app.post("/commission", async (req: Request, res: Response) => {
-  const { topic, requesterAddress } = req.body as {
+  const { topic, requesterAddress, mode: rawMode } = req.body as {
     topic?: string;
     requesterAddress?: string;
+    mode?: string;
   };
 
   if (!topic || !requesterAddress) {
@@ -444,23 +462,24 @@ app.post("/commission", async (req: Request, res: Response) => {
     return;
   }
 
+  const mode: "public" | "exclusive" = rawMode === "exclusive" ? "exclusive" : "public";
+  const fee = mode === "exclusive" ? COMMISSION_FEE_EXCLUSIVE : COMMISSION_FEE_PUBLIC;
   const baseUrl = `${req.protocol}://${req.get("host")}`;
 
   try {
-    // Generate our local commission ID BEFORE calling Locus so we can embed it in successUrl
     const localId = crypto.randomBytes(8).toString("hex");
 
     const session = await createCheckoutSession({
-      amount: COMMISSION_FEE,
-      description: `Dispatch commission: ${topic.slice(0, 80)}`,
-      metadata: { topic: topic.slice(0, 200), requesterAddress, localId },
+      amount: fee,
+      description: `Dispatch ${mode} commission: ${topic.slice(0, 80)}`,
+      metadata: { topic: topic.slice(0, 200), requesterAddress, localId, mode },
       successUrl: `${baseUrl}/?commissionId=${localId}`,
       cancelUrl: `${baseUrl}/`,
     });
 
     const commission: Commission = {
-      sessionId: localId,           // our local ID (used in URLs)
-      locusSessionId: session.id,   // Locus session ID (used for polling)
+      sessionId: localId,
+      locusSessionId: session.id,
       topic,
       requesterAddress,
       checkoutUrl: session.checkoutUrl,
@@ -468,6 +487,8 @@ app.post("/commission", async (req: Request, res: Response) => {
       createdAt: new Date().toISOString(),
       revenueSent: false,
       retryCount: 0,
+      mode,
+      fee,
     };
 
     // Indexed by local ID so frontend can GET /commission/:localId
@@ -520,6 +541,9 @@ app.get("/commission/:sessionId", (req: Request, res: Response) => {
     logs: job?.logs?.slice(-20),
     videoFilename: commission.videoFilename,
     canClaimWatch: commission.status === "done" && !!commission.watchToken,
+    mode: commission.mode,
+    fee: commission.fee,
+    downloadToken: commission.mode === "exclusive" && commission.status === "done" ? commission.downloadToken : undefined,
     headline: commission.headline,
     totalCost: commission.totalCost,
     revenueSent: commission.revenueSent,
@@ -867,8 +891,130 @@ app.get("/video/:filename", async (req: Request, res: Response) => {
 // GET /health
 // ─────────────────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────────
+// GET /video/:filename/preview — free 10s preview, no token
+// ─────────────────────────────────────────────────────────────
+
+app.get("/video/:filename/preview", async (req: Request, res: Response) => {
+  const { filename } = req.params;
+  if (!/^[\w\-\.]+\.mp4$/.test(filename)) {
+    res.status(400).json({ error: "Invalid filename" });
+    return;
+  }
+
+  // Try local disk first
+  const previewPath = `/tmp/${filename.replace(".mp4", "")}-preview.mp4`;
+  // Actually the preview file naming in editor is dispatch-preview-{ts}.mp4 — harder to derive.
+  // Serve from DB instead (reliable across restarts)
+  try {
+    const meta = await db.getVideoPreviewMeta(filename);
+    if (!meta) {
+      res.status(404).json({ error: "Preview not available" });
+      return;
+    }
+    const fileSize = meta.previewLength;
+    const range = req.headers.range;
+
+    if (range) {
+      const match = /^bytes=(\d+)-(\d*)$/.exec(range);
+      if (!match) { res.status(416).setHeader("Content-Range", `bytes */${fileSize}`).end(); return; }
+      const start = parseInt(match[1], 10);
+      const end = match[2] ? parseInt(match[2], 10) : fileSize - 1;
+      if (start >= fileSize || end >= fileSize || start > end) {
+        res.status(416).setHeader("Content-Range", `bytes */${fileSize}`).end(); return;
+      }
+      const chunk = await db.readVideoPreviewRange(filename, start, end);
+      if (!chunk) { res.status(404).end(); return; }
+      res.status(206);
+      res.setHeader("Content-Range", `bytes ${start}-${end}/${fileSize}`);
+      res.setHeader("Accept-Ranges", "bytes");
+      res.setHeader("Content-Length", String(chunk.length));
+      res.setHeader("Content-Type", "video/mp4");
+      res.end(chunk);
+    } else {
+      const full = await db.readVideoPreviewRange(filename);
+      if (!full) { res.status(404).end(); return; }
+      res.setHeader("Accept-Ranges", "bytes");
+      res.setHeader("Content-Length", String(full.length));
+      res.setHeader("Content-Type", "video/mp4");
+      res.end(full);
+    }
+  } catch (e) {
+    res.status(500).json({ error: "Preview read failed" });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// GET /video/:filename/download — exclusive commissioner download
+// ─────────────────────────────────────────────────────────────
+
+app.get("/video/:filename/download", async (req: Request, res: Response) => {
+  const { filename } = req.params;
+  const { token } = req.query as { token?: string };
+
+  if (!/^[\w\-\.]+\.mp4$/.test(filename)) {
+    res.status(400).json({ error: "Invalid filename" });
+    return;
+  }
+
+  if (!token) {
+    res.status(403).json({ error: "Download token required" });
+    return;
+  }
+
+  // Find commission with this download token
+  let matched = false;
+  for (const [, c] of commissions) {
+    if (c.downloadToken === token && c.videoFilename === filename && c.mode === "exclusive") {
+      matched = true;
+      break;
+    }
+  }
+
+  if (!matched) {
+    res.status(403).json({ error: "Invalid download token" });
+    return;
+  }
+
+  // Serve from disk first, DB fallback
+  const filePath = `/tmp/${filename}`;
+  if (fs.existsSync(filePath)) {
+    const stat = fs.statSync(filePath);
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.setHeader("Content-Type", "video/mp4");
+    res.setHeader("Content-Length", String(stat.size));
+    fs.createReadStream(filePath).pipe(res);
+    return;
+  }
+
+  // DB fallback
+  try {
+    const full = await db.readVideoRange(filename);
+    if (!full) { res.status(404).json({ error: "Video not found" }); return; }
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.setHeader("Content-Type", "video/mp4");
+    res.setHeader("Content-Length", String(full.length));
+    res.end(full);
+  } catch {
+    res.status(500).json({ error: "Download failed" });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// GET /api/payouts — recent outbox entries
+// ─────────────────────────────────────────────────────────────
+
+app.get("/api/payouts", async (_req: Request, res: Response) => {
+  try {
+    const rows = await db.listOutboxRecent(50);
+    res.json({ success: true, payouts: rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
 app.get("/health", (_req: Request, res: Response) => {
-  res.json({ status: "ok", version: "0.3.0" });
+  res.json({ status: "ok", version: "0.4.0" });
 });
 
 // ─────────────────────────────────────────────────────────────
@@ -931,6 +1077,9 @@ async function bootstrap() {
           retryCount: c.retryCount,
           headline: c.headline,
           totalCost: c.totalCost,
+          mode: (c as unknown as Record<string, unknown>).mode === "exclusive" ? "exclusive" as const : "public" as const,
+          fee: String((c as unknown as Record<string, unknown>).fee ?? COMMISSION_FEE_PUBLIC),
+          downloadToken: (c as unknown as Record<string, unknown>).downloadToken as string | undefined,
         });
       }
       for (const w of wss) {
@@ -955,6 +1104,8 @@ async function bootstrap() {
     console.error("[DB] bootstrap failed:", (e as Error).message);
     db.disable("bootstrap connection failed (VPC-locked RDS, expected for local dev)");
   }
+
+  if (db.hasDb()) startReconciler(PAYOUT_RECONCILE_MS);
 
   app.listen(PORT, () => {
     console.log(`\n📡 Dispatch server running on http://localhost:${PORT}`);

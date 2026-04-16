@@ -53,11 +53,16 @@ function downloadFile(url: string, destPath: string): Promise<void> {
   });
 }
 
+export interface EditorResult {
+  videoPath: string;
+  previewPath: string;
+}
+
 export async function runEditor(
   images: VisualImage[],
   voice: VoiceResult,
   music: MusicResult
-): Promise<string> {
+): Promise<EditorResult> {
   const timestamp = Date.now();
   const outputPath = `/tmp/dispatch-${timestamp}.mp4`;
 
@@ -67,7 +72,7 @@ export async function runEditor(
     console.log("🎞️ [Editor] DEMO MODE — creating placeholder output path");
     // Write a minimal marker file so the server can return something
     fs.writeFileSync(outputPath, "DEMO_VIDEO_PLACEHOLDER");
-    return outputPath;
+    return { videoPath: outputPath, previewPath: outputPath };
   }
 
   // 1. Download images and create Ken Burns clips
@@ -184,6 +189,22 @@ export async function runEditor(
     ]);
   }
 
+  // Generate 10-second preview (stream copy — instant, no re-encode)
+  const previewPath = `/tmp/dispatch-preview-${timestamp}.mp4`;
+  console.log("🎞️ [Editor] Generating 10s preview clip...");
+  try {
+    await runFfmpeg([
+      "-y",
+      "-i", outputPath,
+      "-t", "10",
+      "-c", "copy",
+      "-movflags", "+faststart",
+      previewPath,
+    ]);
+  } catch (e) {
+    console.warn(`🎞️ [Editor] Preview generation failed: ${(e as Error).message}`);
+  }
+
   // Cleanup temp files
   const temps = [...clipPaths, voicePath, ...(musicPath ? [musicPath] : []), concatListPath, concatenatedPath];
   for (const t of temps) {
@@ -191,6 +212,7 @@ export async function runEditor(
   }
 
   console.log(`🎞️ [Editor] Final video: ${outputPath}`);
-  return outputPath;
+  console.log(`🎞️ [Editor] Preview: ${previewPath}`);
+  return { videoPath: outputPath, previewPath };
 }
 

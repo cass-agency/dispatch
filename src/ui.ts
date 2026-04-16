@@ -1592,6 +1592,166 @@ export function renderHome({ videoHistory, agentWallets }: RenderOpts): string {
   ::-webkit-scrollbar-track { background: var(--ink); }
   ::-webkit-scrollbar-thumb { background: var(--ink-3); border: 2px solid var(--ink); }
   ::-webkit-scrollbar-thumb:hover { background: var(--yellow); }
+
+  /* ═══════════════════════════════════════════════════════════════
+     Mode selector (commission form)
+     ═══════════════════════════════════════════════════════════════ */
+  .mode-selector {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 14px;
+    margin-bottom: 20px;
+  }
+  .mode-card {
+    padding: 16px 18px;
+    border: 2.5px solid #000;
+    box-shadow: 4px 4px 0 #000;
+    cursor: pointer;
+    transition: transform .12s ease, box-shadow .12s ease, background .12s ease;
+    background: var(--paper);
+    color: #000;
+    position: relative;
+  }
+  .mode-card:hover {
+    transform: translate(-2px, -2px);
+    box-shadow: 6px 6px 0 #000;
+  }
+  .mode-card.selected {
+    background: var(--yellow);
+    box-shadow: 6px 6px 0 #000;
+    transform: translate(-2px, -2px);
+  }
+  .mode-card__title {
+    font-family: 'Archivo Black', sans-serif;
+    font-size: 14px; letter-spacing: -0.02em;
+    line-height: 1.15;
+    margin-bottom: 10px;
+  }
+  .mode-card__bullets {
+    list-style: none; padding: 0; margin: 0;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10.5px; font-weight: 600;
+    letter-spacing: 0.04em;
+    color: #333;
+    display: flex; flex-direction: column; gap: 4px;
+  }
+  .mode-card__bullets li::before {
+    content: '—';
+    margin-right: 6px;
+    font-weight: 700;
+  }
+  .mode-card__radio {
+    position: absolute; top: 12px; right: 12px;
+    width: 18px; height: 18px;
+    border: 2.5px solid #000;
+    background: #fff;
+    display: grid; place-items: center;
+  }
+  .mode-card.selected .mode-card__radio::after {
+    content: '';
+    width: 10px; height: 10px;
+    background: #000;
+  }
+
+  /* ═══════════════════════════════════════════════════════════════
+     Exclusive success card
+     ═══════════════════════════════════════════════════════════════ */
+  .exclusive-card {
+    background: var(--yellow);
+    color: #000;
+    border: 2.5px solid #000;
+    box-shadow: var(--sh-black-lg);
+    padding: 40px 32px;
+    text-align: center;
+  }
+  .exclusive-card__kicker {
+    display: inline-block;
+    padding: 5px 12px;
+    background: #000; color: var(--yellow);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px; font-weight: 700;
+    letter-spacing: 0.16em; text-transform: uppercase;
+    margin-bottom: 18px;
+    border: 2px solid #000;
+  }
+  .exclusive-card__headline {
+    font-family: 'Archivo Black', sans-serif;
+    font-size: 28px; letter-spacing: -0.03em;
+    line-height: 1.05;
+    margin-bottom: 10px;
+  }
+  .exclusive-card__sub {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12.5px; color: #222;
+    margin-bottom: 28px;
+    max-width: 480px; margin-left: auto; margin-right: auto;
+  }
+  .exclusive-card__actions {
+    display: flex; gap: 14px; justify-content: center; flex-wrap: wrap;
+  }
+
+  /* ═══════════════════════════════════════════════════════════════
+     Preview player overlay
+     ═══════════════════════════════════════════════════════════════ */
+  .preview-overlay {
+    position: absolute; bottom: 0; left: 0; right: 0;
+    padding: 14px 20px;
+    background: rgba(0,0,0,0.88);
+    color: var(--yellow);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px; font-weight: 700;
+    letter-spacing: 0.08em;
+    text-align: center;
+    border-top: 2.5px solid var(--yellow);
+    z-index: 10;
+    display: none;
+  }
+  .preview-overlay.visible { display: block; }
+  .preview-wrapper { position: relative; }
+
+  /* ═══════════════════════════════════════════════════════════════
+     Payouts section
+     ═══════════════════════════════════════════════════════════════ */
+  .payouts-list {
+    display: flex; flex-direction: column; gap: 12px;
+  }
+  .payout-row {
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    padding: 14px 18px;
+    background: var(--ink-2);
+    border: 2.5px solid var(--white);
+    box-shadow: var(--sh-white-sm);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px; font-weight: 600;
+    color: var(--text);
+  }
+  .payout-status {
+    padding: 4px 10px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px; font-weight: 700;
+    letter-spacing: 0.14em; text-transform: uppercase;
+    border: 2px solid #000;
+    color: #000;
+  }
+  .payout-status--pending  { background: var(--yellow); }
+  .payout-status--sent     { background: var(--lime); }
+  .payout-status--failed   { background: var(--coral); }
+  .payout-amount {
+    font-family: 'Archivo Black', sans-serif;
+    font-size: 16px; color: var(--lime);
+    letter-spacing: -0.02em;
+  }
+  .payout-addr { color: var(--text-dim); font-size: 11px; }
+  .payout-reason { color: var(--text-dim); font-size: 11px; flex: 1; }
+  .payout-tx a {
+    color: var(--yellow);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+    font-size: 11px;
+  }
+  .payout-empty {
+    padding: 32px 20px; text-align: center;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px; color: var(--text-dim);
+  }
 </style>
 </head>
 <body>
@@ -1773,6 +1933,27 @@ ${videoHistory.length > 0 ? `
           </div>
         </div>
 
+        <div class="mode-selector" id="mode-selector" data-mode="public">
+          <div class="mode-card selected" data-mode-value="public" onclick="selectMode('public')">
+            <div class="mode-card__radio"></div>
+            <div class="mode-card__title">PUBLIC BROADCAST · $0.50</div>
+            <ul class="mode-card__bullets">
+              <li>Airs on the network</li>
+              <li>Earn 40% of each view</li>
+              <li>Break-even at 25 views</li>
+            </ul>
+          </div>
+          <div class="mode-card" data-mode-value="exclusive" onclick="selectMode('exclusive')">
+            <div class="mode-card__radio"></div>
+            <div class="mode-card__title">EXCLUSIVE · $2.00</div>
+            <ul class="mode-card__bullets">
+              <li>Private — never airs</li>
+              <li>Full MP4 download</li>
+              <li>Use it anywhere</li>
+            </ul>
+          </div>
+        </div>
+
         <div class="field">
           <label class="field-label" for="topicInput">Topic</label>
           <input class="nb-input" type="text" id="topicInput" placeholder="e.g. AI agents reshaping global finance" />
@@ -1785,7 +1966,7 @@ ${videoHistory.length > 0 ? `
           <input class="nb-input mono" type="text" id="walletInput" placeholder="0x…" />
         </div>
 
-        <div class="breakdown">
+        <div id="breakdown-public" class="breakdown">
           <div>
             <div class="breakdown-label">Commission</div>
             <div class="breakdown-value">$0.50</div>
@@ -1804,9 +1985,20 @@ ${videoHistory.length > 0 ? `
           </div>
         </div>
 
+        <div id="breakdown-exclusive" class="breakdown hidden" style="grid-template-columns:1fr 1fr">
+          <div>
+            <div class="breakdown-label">Commission</div>
+            <div class="breakdown-value">$2.00</div>
+          </div>
+          <div>
+            <div class="breakdown-label">You get</div>
+            <div class="breakdown-value"><span class="breakdown-value--accent">FULL OWNERSHIP</span></div>
+          </div>
+        </div>
+
         <button class="nb-btn nb-btn--full" id="commissionBtn" onclick="submitCommission()">
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="1"/><path d="M2 10h20M7 15h2"/></svg>
-          <span>PAY &amp; COMMISSION · OPEN LOCUS CHECKOUT</span>
+          <span id="commissionBtnLabel">PAY &amp; COMMISSION · OPEN LOCUS CHECKOUT</span>
         </button>
       </div>
 
@@ -1957,6 +2149,19 @@ ${videoHistory.length > 0 ? `
   <div class="treasury-grid reveal">
     ${treasuryWallets}
   </div>
+
+  <div style="margin-top:32px" class="reveal">
+    <div class="sec-head" style="padding:0;margin-bottom:18px">
+      <div class="sec-head__l">
+        <div class="kicker">Payouts</div>
+        <h2 class="sec-head__title" style="font-size:clamp(1.2rem,3vw,1.8rem)">On-chain transfers.</h2>
+        <p class="sec-head__sub">Agent payouts and commissioner royalties settled on Base.</p>
+      </div>
+    </div>
+    <div class="payouts-list" id="payouts-list">
+      <div class="payout-empty">Loading payouts...</div>
+    </div>
+  </div>
 </section>
 
 <!-- ═══ HOW IT WORKS ═══ -->
@@ -2020,6 +2225,26 @@ ${videoHistory.length > 0 ? `
   let timerInterval        = null;
   let mountedPipelineJobId = null; // prevents re-mount / auto-scroll loop on each poll
 
+  // ═══ Mode selector ═══
+  function selectMode(mode) {
+    const selector = document.getElementById('mode-selector');
+    if (selector) selector.dataset.mode = mode;
+    document.querySelectorAll('.mode-card').forEach(c => {
+      c.classList.toggle('selected', c.dataset.modeValue === mode);
+    });
+    const brkPublic = document.getElementById('breakdown-public');
+    const brkExclusive = document.getElementById('breakdown-exclusive');
+    if (brkPublic) brkPublic.classList.toggle('hidden', mode === 'exclusive');
+    if (brkExclusive) brkExclusive.classList.toggle('hidden', mode !== 'exclusive');
+    const lbl = document.getElementById('commissionBtnLabel');
+    if (lbl) {
+      lbl.innerHTML = mode === 'exclusive'
+        ? 'PAY &amp; COMMISSION · $2.00 EXCLUSIVE'
+        : 'PAY &amp; COMMISSION · OPEN LOCUS CHECKOUT';
+    }
+  }
+  window.selectMode = selectMode;
+
   const AGENT_SVG_MAP = {
     researcher:   '<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m20 20-4.8-4.8"/></svg>',
     scriptwriter: '<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h11l5 5v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Z"/><path d="M14 4v5h6"/></svg>',
@@ -2060,6 +2285,8 @@ ${videoHistory.length > 0 ? `
     loadBalances();
     setInterval(loadBalances, 30_000);
     loadAgentModes();
+    loadPayouts();
+    payoutTimer = setInterval(loadPayouts, 30_000);
 
     // Bind watch buttons (archive + featured)
     document.querySelectorAll('[data-watch]').forEach((btn) => {
@@ -2201,6 +2428,7 @@ ${videoHistory.length > 0 ? `
     const topic  = document.getElementById('topicInput').value.trim();
     const wallet = document.getElementById('walletInput').value.trim();
     const btn    = document.getElementById('commissionBtn');
+    const mode   = (document.getElementById('mode-selector') || {}).dataset.mode || 'public';
 
     if (!topic)  { flagError('topicInput'); return; }
     if (!wallet || !wallet.startsWith('0x') || wallet.length < 20) { flagError('walletInput'); return; }
@@ -2212,7 +2440,7 @@ ${videoHistory.length > 0 ? `
       const resp = await fetch('/commission', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ topic, requesterAddress: wallet })
+        body: JSON.stringify({ topic, requesterAddress: wallet, mode })
       });
       const data = await resp.json();
       if (!data.sessionId) throw new Error(data.error || 'Commission creation failed');
@@ -2586,9 +2814,48 @@ ${videoHistory.length > 0 ? `
     currentWatchFilename = data.videoFilename;
     currentWatchCommId   = data.sessionId;
 
+    // Exclusive mode — show download card instead of player/watch gate
+    if (data.mode === 'exclusive') {
+      const section = document.getElementById('video-section');
+      section.classList.remove('hidden');
+      requestAnimationFrame(() => section.classList.add('in'));
+      document.getElementById('watch-gate').classList.add('hidden');
+      document.getElementById('video-wrapper').classList.add('hidden');
+      const filename = data.videoFilename;
+      const dlUrl = '/video/' + encodeURIComponent(filename) + '/download?token=' + (data.downloadToken || '');
+      let excEl = document.getElementById('exclusive-success');
+      if (!excEl) {
+        excEl = document.createElement('div');
+        excEl.id = 'exclusive-success';
+        section.appendChild(excEl);
+      }
+      excEl.className = 'exclusive-card';
+      excEl.innerHTML =
+        '<div class="exclusive-card__kicker">YOUR EXCLUSIVE BROADCAST IS READY</div>' +
+        '<div class="exclusive-card__headline">' + escJs(data.headline || '') + '</div>' +
+        '<div class="exclusive-card__sub">This video was produced only for you. It will never air on the network.</div>' +
+        '<div class="exclusive-card__actions">' +
+          '<a href="' + dlUrl + '" class="nb-btn nb-btn--lime" target="_blank">' +
+            '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>' +
+            'DOWNLOAD MP4' +
+          '</a>' +
+          '<button class="nb-btn" onclick="copyExclusiveLink()">' +
+            '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>' +
+            '<span id="copy-link-label">COPY LINK</span>' +
+          '</button>' +
+        '</div>';
+      excEl.dataset.dlUrl = dlUrl;
+      section.scrollIntoView({ behavior:'smooth', block:'start' });
+      return;
+    }
+
     const section = document.getElementById('video-section');
     section.classList.remove('hidden');
     requestAnimationFrame(() => section.classList.add('in'));
+
+    // Remove exclusive card if it existed from a previous render
+    const excOld = document.getElementById('exclusive-success');
+    if (excOld) excOld.remove();
 
     if (data.watchToken) {
       playVideo(data.videoFilename, data.watchToken, data.headline, data.totalCost, data.payments);
@@ -2632,9 +2899,63 @@ ${videoHistory.length > 0 ? `
     const section = document.getElementById('video-section');
     section.classList.remove('hidden');
     requestAnimationFrame(() => section.classList.add('in'));
-    document.getElementById('watch-gate').classList.remove('hidden');
-    document.getElementById('video-wrapper').classList.add('hidden');
 
+    // Show preview player first instead of immediately gating
+    document.getElementById('watch-gate').classList.add('hidden');
+    document.getElementById('video-wrapper').classList.remove('hidden');
+    document.getElementById('video-headline-text').textContent = '';
+    document.getElementById('video-meta-text').textContent = 'Preview — first 10 seconds free';
+    document.getElementById('payment-breakdown').innerHTML = '';
+
+    const vid = document.getElementById('main-video');
+    vid.src = '/video/' + encodeURIComponent(filename) + '/preview';
+    vid.autoplay = true;
+    vid.muted = true;
+    vid.playsInline = true;
+
+    // Add preview overlay if not present
+    let previewWrapper = vid.parentElement.querySelector('.preview-wrapper');
+    if (!previewWrapper) {
+      const parent = vid.parentElement;
+      previewWrapper = document.createElement('div');
+      previewWrapper.className = 'preview-wrapper';
+      parent.insertBefore(previewWrapper, vid);
+      previewWrapper.appendChild(vid);
+      const overlay = document.createElement('div');
+      overlay.className = 'preview-overlay';
+      overlay.id = 'preview-overlay';
+      previewWrapper.appendChild(overlay);
+    }
+    const overlay = document.getElementById('preview-overlay');
+    if (overlay) { overlay.classList.remove('visible'); overlay.textContent = ''; }
+
+    // Timeupdate: show countdown when <= 3s remain
+    function onTimeUpdate() {
+      const remaining = vid.duration - vid.currentTime;
+      if (remaining <= 3 && remaining > 0 && overlay) {
+        overlay.classList.add('visible');
+        overlay.textContent = 'PREVIEW ENDS IN ' + Math.ceil(remaining) + 'S -- PAY $0.05 TO CONTINUE';
+      }
+    }
+    function onEnded() {
+      vid.removeEventListener('timeupdate', onTimeUpdate);
+      vid.removeEventListener('ended', onEnded);
+      if (overlay) overlay.classList.remove('visible');
+      // Show the watch gate for payment
+      document.getElementById('video-wrapper').classList.add('hidden');
+      document.getElementById('watch-gate').classList.remove('hidden');
+      launchWatchCheckout(filename, commissionSessionId);
+    }
+    vid.removeEventListener('timeupdate', onTimeUpdate);
+    vid.removeEventListener('ended', onEnded);
+    vid.addEventListener('timeupdate', onTimeUpdate);
+    vid.addEventListener('ended', onEnded);
+
+    vid.play().catch(function() {});
+    section.scrollIntoView({ behavior:'smooth', block:'start' });
+  }
+
+  async function launchWatchCheckout(filename, commissionSessionId) {
     const btn = document.getElementById('wg-btn');
     btn.disabled = true;
     btn.innerHTML = '<svg class="animate-spin" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4"><circle cx="12" cy="12" r="9" stroke-opacity="0.3"/><path d="M12 3a9 9 0 0 1 9 9"/></svg><span>CREATING CHECKOUT…</span>';
@@ -2657,7 +2978,6 @@ ${videoHistory.length > 0 ? `
       btn.onclick = function() { window.open(data.checkoutUrl, '_blank'); };
 
       startWatchPoll(data.sessionId, filename);
-      section.scrollIntoView({ behavior:'smooth', block:'start' });
     } catch(e) {
       btn.disabled = false;
       btn.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M8 5v14l11-7z"/></svg><span>WATCH · $0.05 USDC</span>';
@@ -2673,14 +2993,67 @@ ${videoHistory.length > 0 ? `
         const data = await resp.json();
         if (data.status === 'paid' && data.watchToken) {
           clearInterval(watchPollTimer);
-          document.getElementById('watch-pending-msg').innerHTML = '<span style="color:#14532d;font-weight:700">✓ Payment confirmed</span>';
-          setTimeout(() => playVideo(filename, data.watchToken, data.headline, data.cost, null), 500);
+          document.getElementById('watch-pending-msg').innerHTML = '<span style="color:#14532d;font-weight:700">Payment confirmed</span>';
+          setTimeout(() => {
+            playVideo(filename, data.watchToken, data.headline, data.cost, null);
+            // Resume from where the preview left off
+            const vid = document.getElementById('main-video');
+            if (vid) {
+              vid.muted = false;
+              vid.currentTime = 10;
+              vid.play().catch(function() {});
+            }
+          }, 500);
         } else if (data.status === 'error') {
           clearInterval(watchPollTimer);
           document.getElementById('watch-pending-msg').innerHTML = '<span style="color:#a00">Payment failed or expired.</span>';
         }
       } catch(e) {}
     }, 3000);
+  }
+
+  // ═══ Exclusive helpers ═══
+  function copyExclusiveLink() {
+    const el = document.getElementById('exclusive-success');
+    const url = el ? window.location.origin + el.dataset.dlUrl : '';
+    if (url && navigator.clipboard) {
+      navigator.clipboard.writeText(url).then(() => {
+        const lbl = document.getElementById('copy-link-label');
+        if (lbl) { lbl.textContent = 'COPIED'; setTimeout(() => { lbl.textContent = 'COPY LINK'; }, 2000); }
+      });
+    }
+  }
+  window.copyExclusiveLink = copyExclusiveLink;
+
+  // ═══ Payouts polling ═══
+  let payoutTimer = null;
+  async function loadPayouts() {
+    try {
+      const resp = await fetch('/api/payouts');
+      const data = await resp.json();
+      const container = document.getElementById('payouts-list');
+      if (!container) return;
+      if (!data.payouts || data.payouts.length === 0) {
+        container.innerHTML = '<div class="payout-empty">No payouts yet.</div>';
+        return;
+      }
+      container.innerHTML = data.payouts.map(function(p) {
+        const statusCls = p.status === 'sent' ? 'sent' : p.status === 'failed' ? 'failed' : 'pending';
+        const addr = p.to_address ? (p.to_address.slice(0,6) + '...' + p.to_address.slice(-4)) : '—';
+        const txLink = p.tx_hash
+          ? '<span class="payout-tx"><a href="https://basescan.org/tx/' + escJs(p.tx_hash) + '" target="_blank" rel="noopener">' + p.tx_hash.slice(0,10) + '...</a></span>'
+          : '';
+        return '<div class="payout-row">' +
+          '<span class="payout-status payout-status--' + statusCls + '">' + escJs(p.status).toUpperCase() + '</span>' +
+          '<span class="payout-amount">$' + (typeof p.amount === 'number' ? p.amount.toFixed(4) : p.amount) + '</span>' +
+          '<span class="payout-addr">' + escJs(addr) + '</span>' +
+          '<span class="payout-reason">' + escJs(p.reason || '') + '</span>' +
+          txLink +
+        '</div>';
+      }).join('');
+    } catch (e) {
+      console.error('Payouts load failed:', e);
+    }
   }
 
   window.submitCommission = submitCommission;

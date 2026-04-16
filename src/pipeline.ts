@@ -47,6 +47,7 @@ export interface Payment {
 
 export interface PipelineResult {
   videoPath: string;
+  previewPath: string;
   totalCost: number;
   payments: Payment[];
   headline: string;
@@ -244,7 +245,8 @@ export async function runPipeline(
 
   // ── Step 6: Edit & assemble ───────────────────────────────
   onStep?.("editor", "start", "🎬 Assembling video: Ken Burns motion + color grade + audio mix...");
-  const videoPath = await runEditor(visuals.images, voice, music);
+  const editorResult = await runEditor(visuals.images, voice, music);
+  const { videoPath, previewPath } = editorResult;
   onStep?.("editor", "done", `✅ Video assembled: ${videoPath.split("/").pop()}`);
 
   // Closing orchestrator message
@@ -261,5 +263,5 @@ export async function runPipeline(
   console.log(`📹 [Pipeline] Video: ${videoPath}`);
   console.log(`💰 [Pipeline] Total paid to agents: $${totalCost.toFixed(4)} USDC`);
 
-  return { videoPath, totalCost, payments, headline: script.headline };
+  return { videoPath, previewPath, totalCost, payments, headline: script.headline };
 }

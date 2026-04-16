@@ -147,6 +147,34 @@ ALTER TABLE watch_sessions  ADD COLUMN IF NOT EXISTS updated_at            TIMES
 -- watch_tokens
 ALTER TABLE watch_tokens    ADD COLUMN IF NOT EXISTS video_filename        TEXT NOT NULL DEFAULT '';
 ALTER TABLE watch_tokens    ADD COLUMN IF NOT EXISTS created_at            TIMESTAMPTZ NOT NULL DEFAULT now();
+
+-- exclusive + preview support
+ALTER TABLE videos          ADD COLUMN IF NOT EXISTS is_exclusive          BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE videos          ADD COLUMN IF NOT EXISTS preview               BYTEA;
+ALTER TABLE videos          ADD COLUMN IF NOT EXISTS preview_length        INTEGER;
+
+-- commission mode + download token
+ALTER TABLE commissions     ADD COLUMN IF NOT EXISTS mode                  TEXT NOT NULL DEFAULT 'public';
+ALTER TABLE commissions     ADD COLUMN IF NOT EXISTS fee                   NUMERIC;
+ALTER TABLE commissions     ADD COLUMN IF NOT EXISTS download_token        TEXT;
+
+-- pay outbox
+CREATE TABLE IF NOT EXISTS pay_outbox (
+  id          SERIAL PRIMARY KEY,
+  to_address  TEXT NOT NULL,
+  amount      NUMERIC NOT NULL,
+  memo        TEXT NOT NULL,
+  reason      TEXT NOT NULL,
+  related_id  TEXT,
+  status      TEXT NOT NULL DEFAULT 'pending',
+  tx_hash     TEXT,
+  attempts    INTEGER NOT NULL DEFAULT 0,
+  last_error  TEXT,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  sent_at     TIMESTAMPTZ
+);
+CREATE UNIQUE INDEX IF NOT EXISTS pay_outbox_dedup_idx ON pay_outbox (related_id, reason) WHERE related_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS pay_outbox_pending_idx ON pay_outbox (status) WHERE status IN ('pending', 'failed');
 `;
 
 export async function initSchema(): Promise<void> {
@@ -176,12 +204,17 @@ export interface VideoRow {
   createdAt: string;
 }
 
-export async function insertVideo(v: VideoRow, data: Buffer): Promise<void> {
+export async function insertVideo(
+  v: VideoRow & { isExclusive?: boolean },
+  data: Buffer,
+  preview?: Buffer
+): Promise<void> {
   if (!hasDb()) return;
   await getPool().query(
     `INSERT INTO videos
-      (filename, headline, topic, cost, payments, commission_session_id, requester_address, content_length, data)
-     VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9)
+      (filename, headline, topic, cost, payments, commission_session_id, requester_address,
+       content_length, data, is_exclusive, preview, preview_length)
+     VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12)
      ON CONFLICT (filename) DO NOTHING`,
     [
       v.filename,
@@ -193,6 +226,9 @@ export async function insertVideo(v: VideoRow, data: Buffer): Promise<void> {
       v.requesterAddress ?? null,
       v.contentLength,
       data,
+      v.isExclusive ?? false,
+      preview ?? null,
+      preview ? preview.length : null,
     ]
   );
 }
@@ -412,4 +448,131 @@ export async function listWatchTokens(): Promise<Array<{ token: string; filename
   if (!hasDb()) return [];
   const r = await getPool().query(`SELECT token, video_filename FROM watch_tokens`);
   return r.rows.map((row) => ({ token: row.token, filename: row.video_filename }));
+}
+
+// ──────────────────────────────────────────────────────────────
+// Video preview
+// ──────────────────────────────────────────────────────────────
+
+export async function getVideoPreviewMeta(filename: string): Promise<{ previewLength: number } | null> {
+  if (!hasDb()) return null;
+  const r = await getPool().query(
+    `SELECT preview_length FROM videos WHERE filename = $1 AND preview IS NOT NULL`,
+    [filename]
+  );
+  if (r.rowCount === 0) return null;
+  return { previewLength: r.rows[0].preview_length };
+}
+
+export async function readVideoPreviewRange(
+  filename: string,
+  start?: number,
+  end?: number
+): Promise<Buffer | null> {
+  if (!hasDb()) return null;
+  const pool = getPool();
+  let sql: string;
+  let params: unknown[];
+  if (start !== undefined && end !== undefined) {
+    sql = `SELECT SUBSTRING(preview FROM $1 FOR $2) AS chunk FROM videos WHERE filename = $3 AND preview IS NOT NULL`;
+    params = [start + 1, end - start + 1, filename];
+  } else {
+    sql = `SELECT preview AS chunk FROM videos WHERE filename = $1 AND preview IS NOT NULL`;
+    params = [filename];
+  }
+  const r = await pool.query(sql, params);
+  if (r.rowCount === 0) return null;
+  return r.rows[0].chunk as Buffer;
+}
+
+// ──────────────────────────────────────────────────────────────
+// Pay outbox — persistent payment queue
+// ──────────────────────────────────────────────────────────────
+
+export interface OutboxRow {
+  id?: number;
+  toAddress: string;
+  amount: number;
+  memo: string;
+  reason: string;
+  relatedId?: string;
+  status?: string;
+  txHash?: string;
+  attempts?: number;
+  lastError?: string;
+  createdAt?: string;
+  sentAt?: string;
+}
+
+export async function insertOutbox(row: OutboxRow): Promise<{ id: number; deduped: boolean }> {
+  if (!hasDb()) return { id: -1, deduped: false };
+  const r = await getPool().query(
+    `INSERT INTO pay_outbox (to_address, amount, memo, reason, related_id)
+     VALUES ($1, $2, $3, $4, $5)
+     ON CONFLICT (related_id, reason) WHERE related_id IS NOT NULL DO NOTHING
+     RETURNING id`,
+    [row.toAddress, row.amount, row.memo, row.reason, row.relatedId ?? null]
+  );
+  if (r.rowCount === 0) return { id: -1, deduped: true };
+  return { id: r.rows[0].id, deduped: false };
+}
+
+export async function listOutboxPending(limit = 20): Promise<OutboxRow[]> {
+  if (!hasDb()) return [];
+  const r = await getPool().query(
+    `SELECT id, to_address, amount::float8 AS amount, memo, reason, related_id, status, tx_hash,
+            attempts, last_error, created_at, sent_at
+     FROM pay_outbox
+     WHERE status IN ('pending', 'failed') AND attempts < 5
+     ORDER BY created_at ASC
+     LIMIT $1`,
+    [limit]
+  );
+  return r.rows.map(mapOutboxRow);
+}
+
+export async function updateOutboxSent(id: number, txHash: string): Promise<void> {
+  if (!hasDb()) return;
+  await getPool().query(
+    `UPDATE pay_outbox SET status = 'sent', tx_hash = $2, sent_at = now() WHERE id = $1`,
+    [id, txHash]
+  );
+}
+
+export async function updateOutboxFailed(id: number, error: string): Promise<void> {
+  if (!hasDb()) return;
+  await getPool().query(
+    `UPDATE pay_outbox SET status = 'failed', attempts = attempts + 1, last_error = $2 WHERE id = $1`,
+    [id, error]
+  );
+}
+
+export async function listOutboxRecent(limit = 50): Promise<OutboxRow[]> {
+  if (!hasDb()) return [];
+  const r = await getPool().query(
+    `SELECT id, to_address, amount::float8 AS amount, memo, reason, related_id, status, tx_hash,
+            attempts, last_error, created_at, sent_at
+     FROM pay_outbox
+     ORDER BY created_at DESC
+     LIMIT $1`,
+    [limit]
+  );
+  return r.rows.map(mapOutboxRow);
+}
+
+function mapOutboxRow(row: Record<string, unknown>): OutboxRow {
+  return {
+    id: Number(row.id),
+    toAddress: String(row.to_address),
+    amount: Number(row.amount),
+    memo: String(row.memo),
+    reason: String(row.reason),
+    relatedId: row.related_id ? String(row.related_id) : undefined,
+    status: String(row.status),
+    txHash: row.tx_hash ? String(row.tx_hash) : undefined,
+    attempts: Number(row.attempts ?? 0),
+    lastError: row.last_error ? String(row.last_error) : undefined,
+    createdAt: row.created_at ? new Date(row.created_at as string).toISOString() : undefined,
+    sentAt: row.sent_at ? new Date(row.sent_at as string).toISOString() : undefined,
+  };
 }
