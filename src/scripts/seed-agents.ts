@@ -13,7 +13,7 @@ import { pay, getLocusBalance } from "../locus";
 import { getAgentMode, AgentName } from "../agent-keys";
 
 // How much to seed each agent's wallet with (one-time float)
-const SEED_AMOUNT = 0.50; // USDC
+const SEED_AMOUNT = parseFloat(process.env.SEED_AMOUNT ?? "0.25"); // USDC per agent
 
 // Wallet address per agent — same map as pipeline.ts
 const AGENT_WALLETS: Record<AgentName, string> = {

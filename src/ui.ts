@@ -1116,6 +1116,210 @@ export function renderHome({ videoHistory, agentWallets }: RenderOpts): string {
   .stream-agent svg { width: 11px; height: 11px; }
 
   /* ═══════════════════════════════════════════════════════════════
+     Agent Council — chat stream with avatars & bubbles
+     ═══════════════════════════════════════════════════════════════ */
+  .council-panel {
+    background: var(--paper); color: #000;
+    border: 2.5px solid #000;
+    box-shadow: 6px 6px 0 var(--yellow);
+    overflow: hidden;
+    margin-top: 20px;
+  }
+  .council-head {
+    padding: 14px 20px;
+    background: #000; color: var(--yellow);
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px; flex-wrap: wrap;
+    border-bottom: 2.5px solid #000;
+  }
+  .council-title {
+    font-family: 'Archivo Black', sans-serif;
+    font-size: 14px; letter-spacing: 0.08em; text-transform: uppercase;
+  }
+  .council-badge {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 4px 9px;
+    background: var(--yellow); color: #000;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px; font-weight: 700;
+    letter-spacing: 0.14em; text-transform: uppercase;
+    border: 1.5px solid var(--yellow);
+  }
+  .council-badge .live-dot { background: #000; }
+
+  /* Avatar strip */
+  .council-avatars {
+    padding: 14px 20px;
+    background: var(--paper-2);
+    border-bottom: 2.5px solid #000;
+    display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+  }
+  .avatar {
+    width: 38px; height: 38px;
+    border: 2.5px solid #000;
+    display: grid; place-items: center;
+    font-family: 'Archivo Black', sans-serif;
+    font-size: 17px; color: #000;
+    box-shadow: 3px 3px 0 #000;
+    position: relative;
+    transition: transform .15s ease;
+  }
+  .avatar.talking {
+    transform: translate(-1px, -1px);
+    animation: avatarPulse 1s ease-in-out infinite;
+  }
+  .avatar-yellow   { background: var(--yellow); }
+  .avatar-lime     { background: var(--lime); }
+  .avatar-coral    { background: var(--coral); }
+  .avatar-sky      { background: var(--sky); }
+  .avatar-lavender { background: var(--lavender); }
+  .avatar-paper    { background: var(--paper); }
+  .avatar-black    { background: #000; color: var(--yellow); }
+  .avatar::after {
+    content: ''; position: absolute;
+    bottom: -3px; right: -3px;
+    width: 10px; height: 10px;
+    border: 2px solid #000;
+    background: rgba(0,0,0,0.2);
+  }
+  .avatar.talking::after { background: var(--red); animation: blink 0.9s infinite; }
+
+  @keyframes avatarPulse {
+    0%, 100% { box-shadow: 3px 3px 0 #000; }
+    50%      { box-shadow: 5px 5px 0 #000; }
+  }
+
+  /* Budget bar */
+  .budget-bar {
+    padding: 12px 20px;
+    background: #fff;
+    border-bottom: 2.5px solid #000;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11.5px; font-weight: 700;
+    color: #000;
+    display: flex; gap: 14px; flex-wrap: wrap; align-items: center;
+  }
+  .budget-chip {
+    padding: 3px 8px;
+    background: var(--paper);
+    border: 1.5px solid #000;
+    box-shadow: 2px 2px 0 #000;
+    font-size: 11px;
+  }
+  .budget-chip.live { background: var(--yellow); }
+
+  /* Chat stream */
+  .chat-stream {
+    padding: 20px 20px 24px;
+    min-height: 180px; max-height: 520px;
+    overflow-y: auto;
+    background: var(--paper);
+    display: flex; flex-direction: column; gap: 14px;
+  }
+  .chat-empty {
+    padding: 40px 20px; text-align: center;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px; color: #666;
+  }
+
+  .chat-row {
+    display: flex; gap: 12px; align-items: flex-start;
+    animation: chatIn 0.35s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  @keyframes chatIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: none; }
+  }
+
+  .chat-avatar {
+    width: 34px; height: 34px; flex-shrink: 0;
+    border: 2.5px solid #000;
+    display: grid; place-items: center;
+    font-family: 'Archivo Black', sans-serif;
+    font-size: 15px; color: #000;
+    box-shadow: 3px 3px 0 #000;
+    margin-top: 2px;
+  }
+  .chat-body { flex: 1; min-width: 0; }
+  .chat-meta {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    margin-bottom: 4px;
+  }
+  .chat-name {
+    font-family: 'Archivo Black', sans-serif;
+    font-size: 11.5px; letter-spacing: 0.08em;
+    text-transform: uppercase; color: #000;
+  }
+  .chat-role {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9.5px; color: #555;
+    letter-spacing: 0.08em; text-transform: uppercase;
+  }
+  .chat-ts {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9.5px; color: #888;
+  }
+  .chat-estimate {
+    padding: 1px 6px;
+    background: #000; color: var(--lime);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9.5px; font-weight: 700;
+    letter-spacing: 0.08em;
+    border: 1.5px solid #000;
+  }
+  .chat-bubble {
+    padding: 11px 14px;
+    font-size: 14px; line-height: 1.45;
+    border: 2.5px solid #000;
+    box-shadow: 4px 4px 0 #000;
+    color: #000;
+    font-weight: 500;
+    position: relative;
+    display: inline-block; max-width: 100%;
+  }
+  .chat-row:nth-child(odd) .chat-bubble  { transform: rotate(-0.4deg); }
+  .chat-row:nth-child(even) .chat-bubble { transform: rotate(0.3deg); }
+  .chat-bubble.bg-yellow   { background: var(--yellow); }
+  .chat-bubble.bg-lime     { background: var(--lime); }
+  .chat-bubble.bg-coral    { background: var(--coral); }
+  .chat-bubble.bg-sky      { background: var(--sky); }
+  .chat-bubble.bg-lavender { background: var(--lavender); }
+  .chat-bubble.bg-paper    { background: #fff; }
+  .chat-bubble.bg-black    { background: #000; color: var(--yellow); }
+  .chat-bubble.kind-error {
+    background: var(--coral);
+    box-shadow: 4px 4px 0 var(--red);
+  }
+  .chat-bubble.kind-recovery {
+    border-style: dashed;
+  }
+  .chat-bubble.kind-handoff {
+    font-style: italic;
+    font-weight: 400;
+  }
+  .chat-bubble.kind-status {
+    background: var(--paper-2); color: #666;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px; padding: 6px 12px;
+    box-shadow: 2px 2px 0 #000;
+  }
+
+  .typing-dots {
+    display: inline-flex; gap: 4px;
+  }
+  .typing-dots span {
+    width: 6px; height: 6px; background: #666;
+    border-radius: 50%;
+    animation: typing 1.2s ease-in-out infinite;
+  }
+  .typing-dots span:nth-child(2) { animation-delay: 0.15s; }
+  .typing-dots span:nth-child(3) { animation-delay: 0.3s; }
+  @keyframes typing {
+    0%, 100% { opacity: 0.3; transform: translateY(0); }
+    50%      { opacity: 1; transform: translateY(-3px); }
+  }
+
+  /* ═══════════════════════════════════════════════════════════════
      Video / Watch gate
      ═══════════════════════════════════════════════════════════════ */
   .video-shell {
@@ -1603,6 +1807,33 @@ ${videoHistory.length > 0 ? `
   </div>
   <div class="pipeline-panel">
     <div class="pipeline">${pipelineCards}</div>
+
+    <!-- COUNCIL CHAT -->
+    <div class="council-panel">
+      <div class="council-head">
+        <div class="council-title">The Council</div>
+        <div class="council-badge"><span class="live-dot"></span>Agents are talking</div>
+      </div>
+      <div class="council-avatars">
+        <div class="avatar avatar-yellow"   data-avatar="researcher"   title="Researcher">R</div>
+        <div class="avatar avatar-lime"     data-avatar="scriptwriter" title="Scriptwriter">S</div>
+        <div class="avatar avatar-coral"    data-avatar="visual"       title="Visual">V</div>
+        <div class="avatar avatar-sky"      data-avatar="voice"        title="Voice">V</div>
+        <div class="avatar avatar-lavender" data-avatar="music"        title="Music">M</div>
+        <div class="avatar avatar-paper"    data-avatar="editor"       title="Editor">E</div>
+        <div style="flex:1"></div>
+        <div class="avatar avatar-black"    data-avatar="orchestrator" title="Orchestrator">O</div>
+      </div>
+      <div class="budget-bar" id="budget-bar">
+        <span>COMMISSION POOL · $0.50</span>
+        <span class="budget-chip" id="budget-reserved">RESERVED · $0.00</span>
+        <span class="budget-chip live" id="budget-margin">MARGIN · $0.50</span>
+      </div>
+      <div class="chat-stream" id="chat-stream">
+        <div class="chat-empty">Waiting for the council to convene…</div>
+      </div>
+    </div>
+
     <div class="terminal">
       <div class="term-head">
         <div class="term-dots">
@@ -1969,6 +2200,107 @@ ${videoHistory.length > 0 ? `
     }
   }
 
+  // ═══ Council chat ═══
+  const AGENT_INITIAL = {
+    researcher: 'R', scriptwriter: 'S', visual: 'V', voice: 'V',
+    music: 'M', editor: 'E', orchestrator: 'O', treasury: 'T',
+  };
+  let reservedTotal = 0;
+
+  function resetCouncil() {
+    const stream = document.getElementById('chat-stream');
+    if (stream) stream.innerHTML = '<div class="chat-empty">Waiting for the council to convene…</div>';
+    document.querySelectorAll('.avatar[data-avatar]').forEach(a => a.classList.remove('talking'));
+    reservedTotal = 0;
+    updateBudgetBar(0);
+  }
+
+  function updateBudgetBar(reserved) {
+    const margin = Math.max(0, 0.50 - reserved);
+    const r = document.getElementById('budget-reserved');
+    const m = document.getElementById('budget-margin');
+    if (r) r.textContent = 'RESERVED · $' + reserved.toFixed(3);
+    if (m) m.textContent = 'MARGIN · $' + margin.toFixed(3);
+  }
+
+  function setAvatarTalking(agent) {
+    document.querySelectorAll('.avatar[data-avatar]').forEach(a => a.classList.remove('talking'));
+    const el = document.querySelector('.avatar[data-avatar="' + agent + '"]');
+    if (el) el.classList.add('talking');
+  }
+
+  function renderChat(msg) {
+    const stream = document.getElementById('chat-stream');
+    if (!stream) return;
+    const empty = stream.querySelector('.chat-empty');
+    if (empty) empty.remove();
+
+    // Remove any existing 'typing' bubble from this agent before rendering the real message
+    if (msg.kind !== 'status') {
+      stream.querySelectorAll('[data-typing-from="' + msg.from + '"]').forEach(n => n.remove());
+    }
+
+    // Status = typing indicator — single bubble that gets replaced
+    if (msg.kind === 'status') {
+      // Don't accumulate; replace any previous typing from same agent
+      stream.querySelectorAll('[data-typing-from="' + msg.from + '"]').forEach(n => n.remove());
+      const row = document.createElement('div');
+      row.className = 'chat-row';
+      row.setAttribute('data-typing-from', msg.from);
+      const color = msg.color || 'paper';
+      row.innerHTML =
+        '<div class="chat-avatar avatar-' + color + '">' + (AGENT_INITIAL[msg.from] || '?') + '</div>' +
+        '<div class="chat-body">' +
+          '<div class="chat-meta"><span class="chat-name">' + msg.from.toUpperCase() + '</span></div>' +
+          '<div class="chat-bubble kind-status"><span class="typing-dots"><span></span><span></span><span></span></span></div>' +
+        '</div>';
+      stream.appendChild(row);
+      stream.scrollTop = stream.scrollHeight;
+      setAvatarTalking(msg.from);
+      return;
+    }
+
+    const row = document.createElement('div');
+    row.className = 'chat-row';
+    const color = msg.color || 'paper';
+    const timeStr = new Date(msg.ts || Date.now()).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const roleLabel = msg.kind === 'handoff' ? 'HANDOFF'
+                    : msg.kind === 'error' ? 'DISTRESS'
+                    : msg.kind === 'recovery' ? 'RECOVERY'
+                    : msg.kind === 'orchestrator' ? 'ORCHESTRATOR'
+                    : 'COUNCIL';
+    const estimateChip = (typeof msg.estimate === 'number')
+      ? '<span class="chat-estimate">EST $' + msg.estimate.toFixed(3) + '</span>'
+      : '';
+    row.innerHTML =
+      '<div class="chat-avatar avatar-' + color + '">' + (AGENT_INITIAL[msg.from] || '?') + '</div>' +
+      '<div class="chat-body">' +
+        '<div class="chat-meta">' +
+          '<span class="chat-name">' + msg.from.toUpperCase() + '</span>' +
+          '<span class="chat-role">' + roleLabel + '</span>' +
+          estimateChip +
+          '<span class="chat-ts">' + timeStr + '</span>' +
+        '</div>' +
+        '<div class="chat-bubble bg-' + color + ' kind-' + (msg.kind || 'council') + '">' + escJs(msg.text) + '</div>' +
+      '</div>';
+    stream.appendChild(row);
+    stream.scrollTop = stream.scrollHeight;
+
+    // Avatar stops talking after the real message lands, unless another typing follows
+    const talkEl = document.querySelector('.avatar[data-avatar="' + msg.from + '"]');
+    if (talkEl) talkEl.classList.remove('talking');
+
+    // Budget bar — accumulate council estimates
+    if (msg.kind === 'council' && typeof msg.estimate === 'number') {
+      reservedTotal += msg.estimate;
+      updateBudgetBar(reservedTotal);
+    }
+  }
+
+  function escJs(s) {
+    return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
   // ═══ Pipeline ═══
   function showPipelineSection(topic, jobId) {
     const section = document.getElementById('pipeline-section');
@@ -1979,6 +2311,7 @@ ${videoHistory.length > 0 ? `
       c.classList.remove('running', 'done', 'error');
     });
     document.querySelectorAll('.pipe-connector').forEach(c => c.classList.remove('active'));
+    resetCouncil();
     const termBody = document.getElementById('terminal-body');
     termBody.innerHTML = '';
     addLog('Pipeline initializing — topic: "' + topic + '"', 'dim');
@@ -2004,6 +2337,10 @@ ${videoHistory.length > 0 ? `
       try {
         const data = JSON.parse(evt.data);
         if (data.type === 'done') { es.close(); sseConn = null; return; }
+        if (data.type === 'chat') {
+          renderChat(data);
+          return;
+        }
         if (data.type === 'step') {
           const { agent, phase } = data;
           const card = document.querySelector('[data-agent="' + agent + '"]');

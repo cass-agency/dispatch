@@ -10,6 +10,7 @@ import {
   StepCallback,
   TokenCallback,
 } from "./pipeline";
+import { ChatCallback, ChatMessage } from "./council";
 import {
   createCheckoutSession,
   getCheckoutSession,
@@ -109,6 +110,7 @@ interface JobRecord {
   logs: string[];
   streamListeners: Response[];
   tokenBuffer: Array<{ agent: string; token: string }>;
+  chatBuffer: ChatMessage[];
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -188,6 +190,7 @@ function launchPipeline(commission: Commission) {
     logs: [],
     streamListeners: [],
     tokenBuffer: [],
+    chatBuffer: [],
   };
   jobs.set(jobId, job);
 
@@ -222,7 +225,17 @@ function launchPipeline(commission: Commission) {
     });
   };
 
-  runPipeline(commission.topic, onStep, onToken)
+  const onChat: ChatCallback = (msg) => {
+    job.chatBuffer.push(msg);
+    if (job.chatBuffer.length > 400) job.chatBuffer.shift();
+    const ev = { type: "chat", ...msg };
+    job.streamListeners.forEach((r) => {
+      try { r.write(`data: ${JSON.stringify(ev)}\n\n`); } catch {}
+    });
+    console.log(`💬 [${msg.from}] ${msg.text}`);
+  };
+
+  runPipeline(commission.topic, onStep, onToken, onChat)
     .then(async (result) => {
       job.status = "done";
       job.result = result;
@@ -650,7 +663,10 @@ app.get("/api/jobs/:jobId/stream", (req: Request, res: Response) => {
   res.setHeader("Connection", "keep-alive");
   res.setHeader("X-Accel-Buffering", "no");
   res.flushHeaders();
-  // Replay buffered tokens
+  // Replay buffered chat first (context), then tokens
+  job.chatBuffer.forEach((m) => {
+    try { res.write(`data: ${JSON.stringify({ type: "chat", ...m })}\n\n`); } catch {}
+  });
   job.tokenBuffer.forEach((item) => {
     try { res.write(`data: ${JSON.stringify(item)}\n\n`); } catch {}
   });
