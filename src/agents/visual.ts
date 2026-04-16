@@ -43,7 +43,7 @@ async function pollFalQueue(statusUrl: string, responseUrl: string): Promise<{ i
   throw new Error("fal.ai image generation timed out");
 }
 
-async function generateImage(prompt: string, segmentIndex: number): Promise<VisualImage> {
+export async function generateImage(prompt: string, segmentIndex: number): Promise<VisualImage> {
   console.log(`🎨 [Visual] Generating image ${segmentIndex + 1}/4...`);
 
   const genRes = (await callWrapped("fal", "generate", {
@@ -128,4 +128,68 @@ Return ONLY valid JSON:
   }
   logCost("visual", 0.08, `fal.ai flux/dev — ${segments.length} images`);
   return { images };
+}
+
+// Supplementary render: called when the voice track exceeds the original 4-frame budget.
+// The visual director is re-engaged via Haiku to propose `count` more prompts that extend
+// the visual language, then Flux generates them.
+export async function runVisualExtra(
+  count: number,
+  script: { headline: string; mood: string; segments: Segment[] },
+  brief: ResearchBrief,
+  startIndex: number,
+  onToken?: (t: string) => void
+): Promise<VisualImage[]> {
+  if (DEMO_MODE) {
+    logCost("visual", 0.02 * count, `fal.ai flux/dev supplementary — demo`);
+    return [];
+  }
+
+  // Ask the visual director for `count` extra prompts
+  let prompts: string[] = [];
+  try {
+    const prompt = `You are the visual director for Dispatch. You already produced ${script.segments.length} cinematic frames for this broadcast. The voiceover came in longer than anticipated — dispatch wants ${count} MORE frame${count > 1 ? "s" : ""} to cover the extra runtime with coherent visuals.
+
+Story: ${script.headline}
+Mood: ${script.mood}
+Emotional register: ${brief.emotionalRegister}
+Existing segments you already covered:
+${script.segments.map((s, i) => `[${i + 1}] ${s.title}: ${s.imagePrompt.slice(0, 80)}`).join("\n")}
+
+Design ${count} ADDITIONAL prompt${count > 1 ? "s" : ""} — alternate angles, establishing shots, deeper dives into the themes. Keep the visual language consistent but don't simply duplicate existing frames.
+
+Return ONLY valid JSON:
+{"imagePrompts": [${Array.from({ length: count }, () => '"..."').join(", ")}]}`;
+
+    const raw = await callWrappedStream(
+      "anthropic",
+      "chat",
+      {
+        model: "claude-haiku-4-5",
+        messages: [{ role: "user", content: prompt }],
+        max_tokens: 500,
+      },
+      onToken ?? (() => {}),
+      AGENT_KEY()
+    );
+    const cleaned = raw.replace(/```json?\n?/g, "").replace(/```/g, "").trim();
+    const parsed = JSON.parse(cleaned) as { imagePrompts?: string[] };
+    if (Array.isArray(parsed.imagePrompts)) prompts = parsed.imagePrompts;
+  } catch (e) {
+    console.warn(`🎨 [Visual] extra-director LLM failed, falling back: ${(e as Error).message}`);
+  }
+
+  while (prompts.length < count) {
+    const seg = script.segments[prompts.length % script.segments.length];
+    prompts.push(seg.imagePrompt + ", alternate cinematic angle");
+  }
+
+  const images: VisualImage[] = [];
+  for (let i = 0; i < count; i++) {
+    const img = await generateImage(prompts[i], startIndex + i);
+    images.push(img);
+  }
+
+  logCost("visual", 0.02 * count, `fal.ai flux/dev supplementary — ${count} frames`);
+  return images;
 }

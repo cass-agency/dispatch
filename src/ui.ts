@@ -1303,6 +1303,50 @@ export function renderHome({ videoHistory, agentWallets }: RenderOpts): string {
     font-size: 12px; padding: 6px 12px;
     box-shadow: 2px 2px 0 #000;
   }
+  .chat-bubble.kind-money {
+    background: var(--yellow);
+    color: #000;
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 700;
+    padding: 10px 14px 10px 14px;
+    border-color: #000;
+    box-shadow: 5px 5px 0 #000;
+    display: inline-flex; align-items: center; gap: 10px;
+    animation: coinIn 0.4s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  .chat-bubble.kind-money .coin {
+    display: inline-grid; place-items: center;
+    width: 24px; height: 24px;
+    background: #fde047;
+    border: 2px solid #000;
+    border-radius: 50%;
+    box-shadow: 0 0 0 2px #fde047, inset -3px -3px 0 rgba(0,0,0,0.15);
+    font-family: 'Archivo Black', sans-serif;
+    font-size: 12px;
+    animation: coinSpin 0.7s ease-in-out;
+  }
+  .chat-bubble.kind-money .money-amt {
+    font-family: 'Archivo Black', sans-serif;
+    font-size: 16px;
+    letter-spacing: -0.01em;
+  }
+  .chat-bubble.kind-money .money-arrow { opacity: 0.6; }
+  .chat-bubble.kind-money .money-to {
+    padding: 2px 7px;
+    background: #000; color: var(--yellow);
+    font-size: 10px; letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+  @keyframes coinIn {
+    0%   { opacity: 0; transform: translateX(-20px) rotate(-3deg); }
+    100% { opacity: 1; transform: none; }
+  }
+  @keyframes coinSpin {
+    0%   { transform: rotateY(0deg)   scale(1); }
+    30%  { transform: rotateY(180deg) scale(1.2); }
+    60%  { transform: rotateY(360deg) scale(1.1); }
+    100% { transform: rotateY(540deg) scale(1); }
+  }
 
   .typing-dots {
     display: inline-flex; gap: 4px;
@@ -2244,6 +2288,46 @@ ${videoHistory.length > 0 ? `
     }
   }
 
+  // ═══ Audio — coin sound via WebAudio (no external asset) ═══
+  let _audioCtx = null;
+  let _audioUnlocked = false;
+  function unlockAudio() {
+    if (_audioUnlocked) return;
+    try {
+      _audioCtx = _audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+      if (_audioCtx.state === 'suspended') _audioCtx.resume();
+      _audioUnlocked = true;
+    } catch (e) {}
+  }
+  // Unlock on first user interaction (browser autoplay policy)
+  ['click','keydown','touchstart'].forEach(ev =>
+    window.addEventListener(ev, unlockAudio, { once: true, passive: true })
+  );
+
+  function playCoinSound() {
+    try {
+      if (!_audioCtx) _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const ctx = _audioCtx;
+      if (ctx.state === 'suspended') ctx.resume();
+      const t0 = ctx.currentTime;
+
+      // Two-note coin ding — mario-style
+      const freqs = [1046.5, 1568.0];  // C6 → G6
+      freqs.forEach((f, i) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'square';
+        osc.frequency.setValueAtTime(f, t0 + i * 0.09);
+        gain.gain.setValueAtTime(0.0001, t0 + i * 0.09);
+        gain.gain.exponentialRampToValueAtTime(0.18, t0 + i * 0.09 + 0.008);
+        gain.gain.exponentialRampToValueAtTime(0.0001, t0 + i * 0.09 + 0.18);
+        osc.connect(gain).connect(ctx.destination);
+        osc.start(t0 + i * 0.09);
+        osc.stop(t0 + i * 0.09 + 0.2);
+      });
+    } catch (e) { /* silent fail */ }
+  }
+
   // ═══ Council chat ═══
   const AGENT_INITIAL = {
     researcher: 'R', scriptwriter: 'S', visual: 'V', voice: 'V',
@@ -2308,6 +2392,34 @@ ${videoHistory.length > 0 ? `
     row.className = 'chat-row';
     const color = msg.color || 'paper';
     const timeStr = new Date(msg.ts || Date.now()).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+    // Special-case: money transfer → coin sound + dedicated bubble
+    if (msg.kind === 'money') {
+      playCoinSound();
+      const amt = typeof msg.amount === 'number' ? msg.amount : 0;
+      const to = (msg.toAgent || '').toUpperCase();
+      const memo = msg.memo ? escJs(msg.memo) : '';
+      row.innerHTML =
+        '<div class="chat-avatar avatar-black">$</div>' +
+        '<div class="chat-body">' +
+          '<div class="chat-meta">' +
+            '<span class="chat-name">TREASURY</span>' +
+            '<span class="chat-role">TRANSFER</span>' +
+            '<span class="chat-ts">' + timeStr + '</span>' +
+          '</div>' +
+          '<div class="chat-bubble kind-money">' +
+            '<span class="coin">$</span>' +
+            '<span class="money-amt">$' + amt.toFixed(3) + '</span>' +
+            '<span class="money-arrow">→</span>' +
+            '<span class="money-to">' + escJs(to) + '</span>' +
+            (memo ? '<span style="opacity:0.7;font-weight:500;margin-left:6px">' + memo + '</span>' : '') +
+          '</div>' +
+        '</div>';
+      stream.appendChild(row);
+      stream.scrollTop = stream.scrollHeight;
+      return;
+    }
+
     const roleLabel = msg.kind === 'handoff' ? 'HANDOFF'
                     : msg.kind === 'error' ? 'DISTRESS'
                     : msg.kind === 'recovery' ? 'RECOVERY'

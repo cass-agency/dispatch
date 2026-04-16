@@ -82,7 +82,13 @@ export interface ChatMessage {
   ts: number;
   estimate?: number;
   balance?: number;
-  kind: "status" | "council" | "handoff" | "error" | "recovery" | "orchestrator";
+  kind: "status" | "council" | "handoff" | "error" | "recovery" | "orchestrator" | "money";
+  // For kind === "money"
+  amount?: number;
+  toAgent?: AgentName | "orchestrator";
+  fromAgent?: AgentName | "orchestrator";
+  txHash?: string;
+  memo?: string;
 }
 
 export type ChatCallback = (msg: ChatMessage) => void;
