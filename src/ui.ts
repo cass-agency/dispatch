@@ -2026,11 +2026,44 @@ ${videoHistory.length > 0 ? `
     const params = new URLSearchParams(window.location.search);
     const sessionId = params.get('commissionId');
     if (sessionId) {
-      currentCommissionId = sessionId;
-      showPendingState('Checking commission status…', '');
-      startCommissionPoll(sessionId);
+      resumeCommission(sessionId);
     }
   });
+
+  // Eagerly probe a commission id from the URL and route to the right state,
+  // or clear the URL if the commission is unknown / terminal.
+  async function resumeCommission(sessionId) {
+    try {
+      const resp = await fetch('/commission/' + sessionId);
+      if (resp.status === 404) {
+        // Stale url (pre-deploy or wiped state) — reset to the form.
+        history.replaceState(null, '', '/');
+        return;
+      }
+      const data = await resp.json();
+      currentCommissionId = sessionId;
+      if (data.status === 'done') {
+        showCommissionerVideo(data);
+        return;
+      }
+      if (data.status === 'error' || data.status === 'refund_needed') {
+        // Terminal — surface the correct state, clear the URL so a reload starts fresh.
+        handleCommissionStatus(data);
+        history.replaceState(null, '', '/');
+        return;
+      }
+      if (data.status === 'generating') {
+        showPipelineSection(data.topic, data.jobId);
+        startCommissionPoll(sessionId);
+        return;
+      }
+      // pending_payment — show the pending card with the real checkout URL
+      showPendingState(data.topic || 'Commission', data.checkoutUrl || '');
+      startCommissionPoll(sessionId);
+    } catch (e) {
+      history.replaceState(null, '', '/');
+    }
+  }
 
   function updateOnAirClock() {
     const el = document.getElementById('onair-time');
@@ -2161,6 +2194,14 @@ ${videoHistory.length > 0 ? `
     commissionPollTimer = setInterval(async () => {
       try {
         const resp = await fetch('/commission/' + sessionId);
+        if (resp.status === 404) {
+          clearInterval(commissionPollTimer);
+          history.replaceState(null, '', '/');
+          document.getElementById('pending-state').classList.add('hidden');
+          document.getElementById('refund-state').classList.add('hidden');
+          document.getElementById('form-state').classList.remove('hidden');
+          return;
+        }
         const data = await resp.json();
         handleCommissionStatus(data);
       } catch(e) {}
