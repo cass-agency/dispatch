@@ -131,6 +131,9 @@ ALTER TABLE commissions     ADD COLUMN IF NOT EXISTS headline              TEXT;
 ALTER TABLE commissions     ADD COLUMN IF NOT EXISTS total_cost            NUMERIC;
 ALTER TABLE commissions     ADD COLUMN IF NOT EXISTS created_at            TIMESTAMPTZ NOT NULL DEFAULT now();
 ALTER TABLE commissions     ADD COLUMN IF NOT EXISTS updated_at            TIMESTAMPTZ NOT NULL DEFAULT now();
+ALTER TABLE commissions     ADD COLUMN IF NOT EXISTS origin                TEXT NOT NULL DEFAULT 'locus';
+ALTER TABLE commissions     ADD COLUMN IF NOT EXISTS x402_tx_hash          TEXT;
+ALTER TABLE commissions     ADD COLUMN IF NOT EXISTS callback_url          TEXT;
 CREATE INDEX IF NOT EXISTS commissions_locus_idx ON commissions (locus_session_id);
 
 -- watch_sessions
@@ -314,6 +317,9 @@ export interface CommissionRow {
   retryCount: number;
   headline?: string;
   totalCost?: number;
+  origin?: "locus" | "obolos";
+  x402TxHash?: string;
+  callbackUrl?: string;
 }
 
 export async function upsertCommission(c: CommissionRow): Promise<void> {
@@ -322,8 +328,9 @@ export async function upsertCommission(c: CommissionRow): Promise<void> {
     `INSERT INTO commissions
       (session_id, locus_session_id, topic, requester_address, checkout_url, status,
        paid_at, payer_address, payment_tx_hash, job_id, video_filename, watch_token,
-       revenue_sent, retry_count, headline, total_cost, created_at, updated_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16, COALESCE($17::timestamptz, now()), now())
+       revenue_sent, retry_count, headline, total_cost, origin, x402_tx_hash, callback_url,
+       created_at, updated_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19, COALESCE($20::timestamptz, now()), now())
      ON CONFLICT (session_id) DO UPDATE SET
        status          = EXCLUDED.status,
        paid_at         = EXCLUDED.paid_at,
@@ -336,12 +343,15 @@ export async function upsertCommission(c: CommissionRow): Promise<void> {
        retry_count     = EXCLUDED.retry_count,
        headline        = EXCLUDED.headline,
        total_cost      = EXCLUDED.total_cost,
+       x402_tx_hash    = EXCLUDED.x402_tx_hash,
        updated_at      = now()`,
     [
       c.sessionId, c.locusSessionId, c.topic, c.requesterAddress, c.checkoutUrl, c.status,
       c.paidAt ?? null, c.payerAddress ?? null, c.paymentTxHash ?? null, c.jobId ?? null,
       c.videoFilename ?? null, c.watchToken ?? null, c.revenueSent, c.retryCount,
-      c.headline ?? null, c.totalCost ?? null, c.createdAt,
+      c.headline ?? null, c.totalCost ?? null,
+      c.origin ?? "locus", c.x402TxHash ?? null, c.callbackUrl ?? null,
+      c.createdAt,
     ]
   );
 }
@@ -351,7 +361,8 @@ export async function listCommissions(): Promise<CommissionRow[]> {
   const r = await getPool().query(
     `SELECT session_id, locus_session_id, topic, requester_address, checkout_url, status,
             paid_at, payer_address, payment_tx_hash, job_id, video_filename, watch_token,
-            revenue_sent, retry_count, headline, total_cost::float8 AS total_cost, created_at
+            revenue_sent, retry_count, headline, total_cost::float8 AS total_cost,
+            origin, x402_tx_hash, callback_url, created_at
      FROM commissions ORDER BY created_at ASC`
   );
   return r.rows.map((row) => ({
@@ -371,6 +382,9 @@ export async function listCommissions(): Promise<CommissionRow[]> {
     retryCount: Number(row.retry_count ?? 0),
     headline: row.headline ?? undefined,
     totalCost: row.total_cost !== null ? Number(row.total_cost) : undefined,
+    origin: (row.origin === "obolos" ? "obolos" : "locus") as "locus" | "obolos",
+    x402TxHash: row.x402_tx_hash ?? undefined,
+    callbackUrl: row.callback_url ?? undefined,
     createdAt: new Date(row.created_at).toISOString(),
   }));
 }

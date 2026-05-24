@@ -39,6 +39,12 @@ const WATCH_PRICE    = "0.05";
 const REQUESTER_SHARE_PCT = 0.40;
 const PAYOUT_RECONCILE_MS = 30_000;
 
+// Obolos integration — promo prices for the launch window.
+// Payment is verified by Obolos's proxy before our endpoint is hit.
+const OBOLOS_FEE_PUBLIC    = "0.25";
+const OBOLOS_FEE_EXCLUSIVE = "1.00";
+const OBOLOS_INBOUND_SECRET = process.env.OBOLOS_INBOUND_SECRET ?? "";
+
 const AGENT_WALLETS: Record<string, { emoji: string; label: string; address: string }> = {
   researcher:   { emoji: "🔍", label: "Researcher",   address: "0x99ea943041e186b103a160e843e3e8ef47881c5c" },
   scriptwriter: { emoji: "✍️",  label: "Scriptwriter", address: "0x403760e3f06c126c687722897bf2d661cb8585a8" },
@@ -76,6 +82,9 @@ interface Commission {
   mode: "public" | "exclusive";
   fee: string;
   downloadToken?: string;
+  origin: "locus" | "obolos";
+  x402TxHash?: string;
+  callbackUrl?: string;
 }
 
 interface WatchSession {
@@ -317,6 +326,13 @@ function launchPipeline(commission: Commission) {
       console.log(
         `✅ [Pipeline] Commission ${commission.sessionId} done — video: ${filename}`
       );
+
+      // Best-effort webhook for Obolos buyers that supplied a callbackUrl
+      if (commission.origin === "obolos" && commission.callbackUrl) {
+        fireObolosCallback(commission).catch((e) =>
+          console.warn(`[Obolos] callback failed: ${(e as Error).message}`)
+        );
+      }
     })
     .catch((err: unknown) => {
       const message = err instanceof Error ? err.message : String(err);
@@ -489,6 +505,7 @@ app.post("/commission", async (req: Request, res: Response) => {
       retryCount: 0,
       mode,
       fee,
+      origin: "locus",
     };
 
     // Indexed by local ID so frontend can GET /commission/:localId
@@ -548,6 +565,141 @@ app.get("/commission/:sessionId", (req: Request, res: Response) => {
     totalCost: commission.totalCost,
     revenueSent: commission.revenueSent,
     retryCount: commission.retryCount,
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// Obolos marketplace endpoints
+//
+// Dispatch is registered as a seller API on obolos.tech. Obolos's proxy
+// verifies x402 payment, then forwards a plain HTTP call to POST
+// /obolos/commission with a shared-secret header proving the call came
+// from the proxy. We return 202 immediately with a commissionId and a
+// public statusUrl the buyer polls (video generation takes 2–5 min,
+// exceeding Obolos's 5-min proxy timeout).
+//
+// See PRD_OBOLOS_LISTING.md.
+// ─────────────────────────────────────────────────────────────
+
+function requireObolosCaller(req: Request, res: Response, next: () => void): void {
+  if (!OBOLOS_INBOUND_SECRET) {
+    res.status(503).json({ error: "OBOLOS_INBOUND_SECRET not configured" });
+    return;
+  }
+  const provided = (req.header("authorization") ?? "").replace(/^Bearer\s+/i, "").trim();
+  if (provided !== OBOLOS_INBOUND_SECRET) {
+    res.status(401).json({ error: "Invalid Obolos caller credentials" });
+    return;
+  }
+  next();
+}
+
+async function fireObolosCallback(commission: Commission): Promise<void> {
+  if (!commission.callbackUrl) return;
+  const payload = {
+    commissionId: commission.sessionId,
+    status: commission.status,
+    videoUrl: commission.videoFilename
+      ? `/video/${commission.videoFilename}` + (commission.downloadToken ? `/download?token=${commission.downloadToken}` : "")
+      : undefined,
+    downloadToken: commission.downloadToken,
+    watchToken: commission.watchToken,
+    headline: commission.headline,
+  };
+  // One retry, ~2s gap. Failures are silently dropped — buyer can poll.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      await axios.post(commission.callbackUrl, payload, { timeout: 10_000 });
+      return;
+    } catch (e) {
+      if (attempt === 1) throw e;
+      await new Promise((r) => setTimeout(r, 2_000));
+    }
+  }
+}
+
+// POST /obolos/commission — called by the Obolos proxy after payment settles
+app.post("/obolos/commission", requireObolosCaller, async (req: Request, res: Response) => {
+  const { topic, mode: rawMode, callbackUrl, requesterAddress, x402TxHash } = req.body as {
+    topic?: string;
+    mode?: string;
+    callbackUrl?: string;
+    requesterAddress?: string;
+    x402TxHash?: string;
+  };
+
+  if (!topic || !requesterAddress) {
+    res.status(400).json({ error: "topic and requesterAddress are required" });
+    return;
+  }
+
+  const mode: "public" | "exclusive" = rawMode === "exclusive" ? "exclusive" : "public";
+  const fee = mode === "exclusive" ? OBOLOS_FEE_EXCLUSIVE : OBOLOS_FEE_PUBLIC;
+  const localId = crypto.randomBytes(8).toString("hex");
+  const baseUrl = `${req.protocol}://${req.get("host")}`;
+
+  const commission: Commission = {
+    sessionId: localId,
+    locusSessionId: "",                       // n/a for Obolos-origin
+    topic,
+    requesterAddress,
+    checkoutUrl: "",                          // n/a — paid upstream via x402
+    status: "generating",                     // skip pending_payment; Obolos proxy already settled
+    createdAt: new Date().toISOString(),
+    paidAt: new Date().toISOString(),
+    payerAddress: requesterAddress,
+    paymentTxHash: x402TxHash,
+    revenueSent: false,
+    retryCount: 0,
+    mode,
+    fee,
+    origin: "obolos",
+    x402TxHash,
+    callbackUrl,
+  };
+
+  commissions.set(localId, commission);
+  db.upsertCommission({ ...commission }).catch((e) =>
+    console.error("[DB] obolos commission upsert failed:", e.message)
+  );
+
+  console.log(`📋 [Obolos] Commission ${localId} (${mode}, $${fee}) — topic: "${topic}"`);
+
+  launchPipeline(commission);
+
+  res.status(202).json({
+    commissionId: localId,
+    statusUrl: `${baseUrl}/obolos/commission/${localId}`,
+    estimatedSeconds: 240,
+    mode,
+    fee,
+  });
+});
+
+// GET /obolos/commission/:id — public status polling for the Obolos buyer
+app.get("/obolos/commission/:id", (req: Request, res: Response) => {
+  const commission = commissions.get(req.params.id);
+  if (!commission || commission.origin !== "obolos") {
+    res.status(404).json({ error: "Commission not found" });
+    return;
+  }
+  const baseUrl = `${req.protocol}://${req.get("host")}`;
+  const videoUrl = commission.videoFilename
+    ? (commission.downloadToken
+        ? `${baseUrl}/video/${commission.videoFilename}/download?token=${commission.downloadToken}`
+        : `${baseUrl}/video/${commission.videoFilename}`)
+    : undefined;
+
+  res.json({
+    commissionId: commission.sessionId,
+    status: commission.status,
+    topic: commission.topic,
+    mode: commission.mode,
+    fee: commission.fee,
+    headline: commission.headline,
+    videoUrl,
+    downloadToken: commission.mode === "exclusive" && commission.status === "done" ? commission.downloadToken : undefined,
+    watchToken: commission.mode === "public" && commission.status === "done" ? commission.watchToken : undefined,
   });
 });
 
@@ -1080,6 +1232,9 @@ async function bootstrap() {
           mode: (c as unknown as Record<string, unknown>).mode === "exclusive" ? "exclusive" as const : "public" as const,
           fee: String((c as unknown as Record<string, unknown>).fee ?? COMMISSION_FEE_PUBLIC),
           downloadToken: (c as unknown as Record<string, unknown>).downloadToken as string | undefined,
+          origin: c.origin ?? "locus",
+          x402TxHash: c.x402TxHash,
+          callbackUrl: c.callbackUrl,
         });
       }
       for (const w of wss) {
