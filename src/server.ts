@@ -50,6 +50,10 @@ const PAYOUT_RECONCILE_MS = 30_000;
 // listed price regardless of mode.)
 const OBOLOS_LISTED_PRICE   = "1.00";
 const OBOLOS_INBOUND_SECRET = process.env.OBOLOS_INBOUND_SECRET ?? "";
+// Public base URL. BWL's LB swallows X-Forwarded-Proto so req.protocol reads
+// "http"; we use the explicit env var to construct https:// URLs we hand to
+// Obolos buyers. Falls back to req-derived if unset (local dev).
+const DISPATCH_PUBLIC_URL   = (process.env.DISPATCH_PUBLIC_URL ?? "").replace(/\/$/, "");
 
 const AGENT_WALLETS: Record<string, { emoji: string; label: string; address: string }> = {
   researcher:   { emoji: "🔍", label: "Researcher",   address: "0x99ea943041e186b103a160e843e3e8ef47881c5c" },
@@ -659,7 +663,7 @@ app.post("/obolos/commission", requireObolosCaller, async (req: Request, res: Re
 
   const mode: "public" | "exclusive" = rawMode === "exclusive" ? "exclusive" : "public";
   const localId = crypto.randomBytes(8).toString("hex");
-  const baseUrl = `${req.protocol}://${req.get("host")}`;
+  const baseUrl = DISPATCH_PUBLIC_URL || `${req.protocol}://${req.get("host")}`;
 
   // Mint the access token up front so we can return a permanent videoUrl now.
   // Same token gates the eventual MP4. Public → watchToken; exclusive → downloadToken.
@@ -714,7 +718,7 @@ app.get("/obolos/commission/:id", (req: Request, res: Response) => {
     res.status(404).json({ error: "Commission not found" });
     return;
   }
-  const baseUrl = `${req.protocol}://${req.get("host")}`;
+  const baseUrl = DISPATCH_PUBLIC_URL || `${req.protocol}://${req.get("host")}`;
   const token = commission.watchToken ?? commission.downloadToken;
   const videoUrl = token ? `${baseUrl}/obolos/commission/${commission.sessionId}/video?token=${token}` : undefined;
 
