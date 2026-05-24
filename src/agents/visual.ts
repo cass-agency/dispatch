@@ -40,12 +40,29 @@ interface StabilityResponse {
 export async function generateImage(prompt: string, segmentIndex: number): Promise<VisualImage> {
   console.log(`🎨 [Visual] Generating image ${segmentIndex + 1}/4 via ${IMAGE_PROVIDER}/${IMAGE_ENDPOINT}...`);
 
-  const res = (await callWrapped(
-    IMAGE_PROVIDER,
-    IMAGE_ENDPOINT,
-    { prompt, aspect_ratio: IMAGE_ASPECT, output_format: "png" },
-    AGENT_KEY()
-  )) as StabilityResponse;
+  // Retry up to 3 times for transient Locus 502 ("Upstream API call failed").
+  // Auth/validation errors propagate immediately.
+  let res: StabilityResponse | undefined;
+  let lastErr: Error | undefined;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      res = (await callWrapped(
+        IMAGE_PROVIDER,
+        IMAGE_ENDPOINT,
+        { prompt, aspect_ratio: IMAGE_ASPECT, output_format: "png" },
+        AGENT_KEY()
+      )) as StabilityResponse;
+      break;
+    } catch (e) {
+      lastErr = e as Error;
+      const transient = /\b(502|503|504|ECONNRESET|ETIMEDOUT|Upstream API call failed)\b/i.test(lastErr.message);
+      if (!transient || attempt === 3) throw lastErr;
+      const wait = 2_000 * attempt;
+      console.warn(`🎨 [Visual] transient error on image ${segmentIndex + 1} attempt ${attempt}: ${lastErr.message.slice(0, 120)}. Retrying in ${wait}ms.`);
+      await new Promise((r) => setTimeout(r, wait));
+    }
+  }
+  if (!res) throw lastErr ?? new Error("Stability generate: no response");
 
   if (res.finish_reason && res.finish_reason !== "SUCCESS") {
     throw new Error(`Stability generate failed: ${res.finish_reason}`);
