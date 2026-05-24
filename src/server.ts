@@ -39,10 +39,11 @@ const WATCH_PRICE    = "0.05";
 const REQUESTER_SHARE_PCT = 0.40;
 const PAYOUT_RECONCILE_MS = 30_000;
 
-// Obolos integration — promo prices for the launch window.
-// Payment is verified by Obolos's proxy before our endpoint is hit.
-const OBOLOS_FEE_PUBLIC    = "0.25";
-const OBOLOS_FEE_EXCLUSIVE = "1.00";
+// Obolos integration. The listing's `pricePerCall` is what Obolos actually
+// charges; mode is just a behavior toggle that doesn't change the price.
+// (Earlier per-mode constants were wrong — buyer was always charged the
+// listed price regardless of mode.)
+const OBOLOS_LISTED_PRICE   = "1.00";
 const OBOLOS_INBOUND_SECRET = process.env.OBOLOS_INBOUND_SECRET ?? "";
 
 const AGENT_WALLETS: Record<string, { emoji: string; label: string; address: string }> = {
@@ -355,6 +356,24 @@ function launchPipeline(commission: Commission) {
         console.error(
           `💸 [Refund needed] Commission ${commission.sessionId} — refund $${commission.fee} to ${commission.payerAddress}`
         );
+        // For Obolos commissions, auto-enqueue the refund through pay_outbox.
+        // Locus commissions stay manual (the operator polls /api/payouts and
+        // approves refunds case-by-case via Locus checkout-side tooling).
+        if (commission.origin === "obolos" && commission.payerAddress) {
+          enqueuePayout({
+            toAddress: commission.payerAddress,
+            amount: parseFloat(commission.fee),
+            memo: `Dispatch auto-refund — commission ${commission.sessionId} failed after retries`,
+            reason: "refund",
+            relatedId: commission.sessionId,
+          })
+            .then(({ sent }) => {
+              console.log(`💸 [Refund] obolos ${commission.sessionId} enqueued (sent=${sent})`);
+            })
+            .catch((e) => {
+              console.error(`💸 [Refund] obolos ${commission.sessionId} enqueue failed:`, (e as Error).message);
+            });
+        }
       }
       db.upsertCommission({ ...commission }).catch(() => {});
     });
@@ -634,9 +653,13 @@ app.post("/obolos/commission", requireObolosCaller, async (req: Request, res: Re
   }
 
   const mode: "public" | "exclusive" = rawMode === "exclusive" ? "exclusive" : "public";
-  const fee = mode === "exclusive" ? OBOLOS_FEE_EXCLUSIVE : OBOLOS_FEE_PUBLIC;
   const localId = crypto.randomBytes(8).toString("hex");
   const baseUrl = `${req.protocol}://${req.get("host")}`;
+
+  // Mint the access token up front so we can return a permanent videoUrl now.
+  // Same token gates the eventual MP4. Public → watchToken; exclusive → downloadToken.
+  const accessToken = makeToken();
+  const videoUrl = `${baseUrl}/obolos/commission/${localId}/video?token=${accessToken}`;
 
   const commission: Commission = {
     sessionId: localId,
@@ -652,10 +675,12 @@ app.post("/obolos/commission", requireObolosCaller, async (req: Request, res: Re
     revenueSent: false,
     retryCount: 0,
     mode,
-    fee,
+    fee: OBOLOS_LISTED_PRICE,
     origin: "obolos",
     x402TxHash,
     callbackUrl,
+    watchToken:    mode === "public"    ? accessToken : undefined,
+    downloadToken: mode === "exclusive" ? accessToken : undefined,
   };
 
   commissions.set(localId, commission);
@@ -663,20 +688,21 @@ app.post("/obolos/commission", requireObolosCaller, async (req: Request, res: Re
     console.error("[DB] obolos commission upsert failed:", e.message)
   );
 
-  console.log(`📋 [Obolos] Commission ${localId} (${mode}, $${fee}) — topic: "${topic}"`);
+  console.log(`📋 [Obolos] Commission ${localId} (${mode}, $${OBOLOS_LISTED_PRICE}) — topic: "${topic}"`);
 
   launchPipeline(commission);
 
   res.status(202).json({
     commissionId: localId,
     statusUrl: `${baseUrl}/obolos/commission/${localId}`,
+    videoUrl,                              // permanent URL — 425 while pending, MP4 when ready
     estimatedSeconds: 240,
     mode,
-    fee,
+    fee: OBOLOS_LISTED_PRICE,
   });
 });
 
-// GET /obolos/commission/:id — public status polling for the Obolos buyer
+// GET /obolos/commission/:id — JSON status polling for the Obolos buyer
 app.get("/obolos/commission/:id", (req: Request, res: Response) => {
   const commission = commissions.get(req.params.id);
   if (!commission || commission.origin !== "obolos") {
@@ -684,11 +710,8 @@ app.get("/obolos/commission/:id", (req: Request, res: Response) => {
     return;
   }
   const baseUrl = `${req.protocol}://${req.get("host")}`;
-  const videoUrl = commission.videoFilename
-    ? (commission.downloadToken
-        ? `${baseUrl}/video/${commission.videoFilename}/download?token=${commission.downloadToken}`
-        : `${baseUrl}/video/${commission.videoFilename}`)
-    : undefined;
+  const token = commission.watchToken ?? commission.downloadToken;
+  const videoUrl = token ? `${baseUrl}/obolos/commission/${commission.sessionId}/video?token=${token}` : undefined;
 
   res.json({
     commissionId: commission.sessionId,
@@ -699,8 +722,58 @@ app.get("/obolos/commission/:id", (req: Request, res: Response) => {
     headline: commission.headline,
     videoUrl,
     downloadToken: commission.mode === "exclusive" && commission.status === "done" ? commission.downloadToken : undefined,
-    watchToken: commission.mode === "public" && commission.status === "done" ? commission.watchToken : undefined,
+    watchToken:    commission.mode === "public"    && commission.status === "done" ? commission.watchToken    : undefined,
   });
+});
+
+// GET /obolos/commission/:id/video?token=... — the permanent video URL handed
+// out at commission time. Returns 425 (Too Early) while pending, 410 (Gone) on
+// refund_needed, MP4 stream when the pipeline finishes.
+app.get("/obolos/commission/:id/video", async (req: Request, res: Response) => {
+  const commission = commissions.get(req.params.id);
+  if (!commission || commission.origin !== "obolos") {
+    res.status(404).json({ error: "Commission not found" });
+    return;
+  }
+  const presentedToken = String(req.query.token ?? "");
+  const expected = commission.watchToken ?? commission.downloadToken;
+  if (!expected || presentedToken !== expected) {
+    res.status(403).json({ error: "Invalid token" });
+    return;
+  }
+  if (commission.status === "refund_needed" || commission.status === "error") {
+    res.status(410).json({ status: commission.status, error: "Commission failed; refund issued or pending" });
+    return;
+  }
+  if (commission.status !== "done" || !commission.videoFilename) {
+    res.status(425).json({
+      status: commission.status,
+      headline: commission.headline,
+      message: "Video not ready yet — poll the statusUrl, or retry this URL shortly.",
+    });
+    return;
+  }
+  // Done. Serve MP4 from disk or DB, identical to /video/:filename behavior but
+  // without needing a separate token lookup (we already verified above).
+  const filename = commission.videoFilename;
+  const diskPath = path.join("videos", filename);
+  if (fs.existsSync(diskPath)) {
+    res.set({ "Content-Type": "video/mp4", "Content-Disposition": `inline; filename="${filename}"` });
+    fs.createReadStream(diskPath).pipe(res);
+    return;
+  }
+  if (db.hasDb()) {
+    const meta = await db.getVideoMeta(filename);
+    if (meta) {
+      const bytes = await db.readVideoRange(filename, 0, meta.contentLength - 1);
+      if (bytes) {
+        res.set({ "Content-Type": "video/mp4", "Content-Length": String(bytes.length) });
+        res.send(bytes);
+        return;
+      }
+    }
+  }
+  res.status(404).json({ error: "Video file missing" });
 });
 
 // ─────────────────────────────────────────────────────────────
