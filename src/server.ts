@@ -26,6 +26,11 @@ import * as db from "./db";
 dotenv.config();
 
 const app = express();
+// BWL (and most load balancers) terminate TLS at the edge and forward plain
+// HTTP, so req.protocol reads "http". Trusting the proxy makes req.protocol
+// respect X-Forwarded-Proto, which we need so the videoUrl / statusUrl we
+// hand back to Obolos buyers are https:// not http://.
+app.set("trust proxy", true);
 app.use(express.json());
 const PORT = process.env.PORT ?? 8080;
 
