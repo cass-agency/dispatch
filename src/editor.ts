@@ -35,6 +35,13 @@ import { MusicResult } from "./agents/music";
 const DEMO_MODE = process.env.DEMO_MODE === "true";
 
 function downloadFile(url: string, destPath: string): Promise<void> {
+  // Visual agent now produces local file paths (Stability AI returns base64
+  // which we persist to /tmp). Just copy from disk instead of HTTP-fetching.
+  if (!url.startsWith("http://") && !url.startsWith("https://")) {
+    return new Promise((resolve, reject) => {
+      fs.copyFile(url, destPath, (err) => (err ? reject(err) : resolve()));
+    });
+  }
   return new Promise((resolve, reject) => {
     const file = fs.createWriteStream(destPath);
     const protocol = url.startsWith("https") ? https : http;

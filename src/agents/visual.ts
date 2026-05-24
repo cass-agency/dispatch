@@ -1,4 +1,7 @@
-import axios from "axios";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
+import * as crypto from "crypto";
 import { callWrapped, callWrappedStream, logCost } from "../locus";
 import { getAgentKey } from "../agent-keys";
 import { Segment } from "./scriptwriter";
@@ -7,7 +10,14 @@ import { ResearchBrief } from "./researcher";
 const AGENT_KEY = () => getAgentKey("visual");
 
 const DEMO_MODE = process.env.DEMO_MODE === "true";
-const IMAGE_MODEL = "fal-ai/flux/dev";
+
+// We use Locus's wrapped Stability AI generate-core (synchronous, returns
+// base64 PNG). Previously used fal.ai/flux/dev, but Locus's wrapped fal
+// endpoint returns queue URLs that point at queue.fal.run and reject all
+// auth — pipeline polling fails with 401. Stability is sync, no polling.
+const IMAGE_PROVIDER = "stability-ai";
+const IMAGE_ENDPOINT = "generate-core";
+const IMAGE_ASPECT   = "16:9";
 
 export interface VisualImage { url: string; segmentIndex: number; }
 export interface VisualResult { images: VisualImage[]; }
@@ -21,49 +31,37 @@ const DEMO_IMAGES: VisualResult = {
   ],
 };
 
-interface FalQueueResponse {
-  request_id: string;
-  status_url: string;
-  response_url: string;
-  status?: string;
-  images?: Array<{ url: string }>;
-}
-
-async function pollFalQueue(statusUrl: string, responseUrl: string): Promise<{ images: Array<{ url: string }> }> {
-  for (let i = 0; i < 30; i++) {
-    const { data: status } = await axios.get<{ status: string }>(statusUrl);
-    if (status.status === "COMPLETED") {
-      const { data: result } = await axios.get<{ images: Array<{ url: string }> }>(responseUrl);
-      return result;
-    } else if (status.status === "FAILED") {
-      throw new Error("fal.ai image generation failed");
-    }
-    await new Promise((r) => setTimeout(r, 3000));
-  }
-  throw new Error("fal.ai image generation timed out");
+interface StabilityResponse {
+  image?: string;          // base64 PNG/JPEG
+  finish_reason?: string;
+  seed?: number;
 }
 
 export async function generateImage(prompt: string, segmentIndex: number): Promise<VisualImage> {
-  console.log(`🎨 [Visual] Generating image ${segmentIndex + 1}/4...`);
+  console.log(`🎨 [Visual] Generating image ${segmentIndex + 1}/4 via ${IMAGE_PROVIDER}/${IMAGE_ENDPOINT}...`);
 
-  const genRes = (await callWrapped("fal", "generate", {
-    model: IMAGE_MODEL, prompt, num_images: 1,
-  }, AGENT_KEY())) as FalQueueResponse;
+  const res = (await callWrapped(
+    IMAGE_PROVIDER,
+    IMAGE_ENDPOINT,
+    { prompt, aspect_ratio: IMAGE_ASPECT, output_format: "png" },
+    AGENT_KEY()
+  )) as StabilityResponse;
 
-  // Synchronous response (images already returned)
-  if (genRes.images?.[0]?.url) {
-    return { url: genRes.images[0].url, segmentIndex };
+  if (res.finish_reason && res.finish_reason !== "SUCCESS") {
+    throw new Error(`Stability generate failed: ${res.finish_reason}`);
+  }
+  if (!res.image) {
+    throw new Error(`Stability generate: missing image bytes for segment ${segmentIndex}`);
   }
 
-  if (!genRes.status_url || !genRes.response_url) {
-    throw new Error("fal.ai generate: missing queue URLs");
-  }
+  // Persist to tmp so the editor's downloader can pick it up by path.
+  const tmpDir = path.join(os.tmpdir(), "dispatch-imgs");
+  fs.mkdirSync(tmpDir, { recursive: true });
+  const filePath = path.join(tmpDir, `seg-${segmentIndex}-${crypto.randomBytes(6).toString("hex")}.png`);
+  fs.writeFileSync(filePath, Buffer.from(res.image, "base64"));
 
-  const result = await pollFalQueue(genRes.status_url, genRes.response_url);
-  const url = result.images?.[0]?.url;
-  if (!url) throw new Error(`No image URL for segment ${segmentIndex}`);
-  console.log(`🎨 [Visual] Image ${segmentIndex + 1} ready: ${url.slice(0, 60)}...`);
-  return { url, segmentIndex };
+  console.log(`🎨 [Visual] Image ${segmentIndex + 1} ready: ${filePath} (${(fs.statSync(filePath).size / 1024).toFixed(0)} KB)`);
+  return { url: filePath, segmentIndex };
 }
 
 export async function runVisual(
@@ -73,7 +71,7 @@ export async function runVisual(
   onToken?: (t: string) => void
 ): Promise<VisualResult> {
   if (DEMO_MODE) {
-    logCost("visual", 0.08, "fal.ai flux/dev — demo");
+    logCost("visual", 0.08, "stability-ai/generate-core — demo");
     return DEMO_IMAGES;
   }
 
@@ -126,7 +124,7 @@ Return ONLY valid JSON:
   for (let i = 0; i < segments.length; i++) {
     images.push(await generateImage(imagePrompts[i] ?? segments[i].imagePrompt, i));
   }
-  logCost("visual", 0.08, `fal.ai flux/dev — ${segments.length} images`);
+  logCost("visual", 0.08, `${IMAGE_PROVIDER}/${IMAGE_ENDPOINT} — ${segments.length} images`);
   return { images };
 }
 
@@ -141,7 +139,7 @@ export async function runVisualExtra(
   onToken?: (t: string) => void
 ): Promise<VisualImage[]> {
   if (DEMO_MODE) {
-    logCost("visual", 0.02 * count, `fal.ai flux/dev supplementary — demo`);
+    logCost("visual", 0.02 * count, `${IMAGE_PROVIDER}/${IMAGE_ENDPOINT} supplementary — demo`);
     return [];
   }
 
@@ -190,6 +188,6 @@ Return ONLY valid JSON:
     images.push(img);
   }
 
-  logCost("visual", 0.02 * count, `fal.ai flux/dev supplementary — ${count} frames`);
+  logCost("visual", 0.02 * count, `${IMAGE_PROVIDER}/${IMAGE_ENDPOINT} supplementary — ${count} frames`);
   return images;
 }
